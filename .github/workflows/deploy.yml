@@ -18,9 +18,9 @@ jobs:
       PROJECT: officedays
       DB_NAME: officedays
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v5
 
-      - uses: actions/setup-node@v4
+      - uses: actions/setup-node@v5
         with:
           node-version: 22
           cache: npm
@@ -59,7 +59,15 @@ jobs:
         # Fails harmlessly when the project already exists.
         run: npx wrangler pages project create "$PROJECT" --production-branch main || true
 
-      # Secrets only reach deployments made after they are set, so this runs before the deploy.
+      # Pages rejects secrets until the project has a deployment, so deploy first.
+      - name: Build and deploy
+        if: steps.creds.outputs.ready == 'true'
+        run: |
+          npm run build
+          npx wrangler pages deploy --project-name "$PROJECT" --branch main --commit-dirty=true | tee deploy.log
+          url=$(grep -oE 'https://[a-z0-9.-]+\.pages\.dev' deploy.log | tail -1)
+          echo "### Deployed to https://$PROJECT.pages.dev (this build: $url)" >> "$GITHUB_STEP_SUMMARY"
+
       - name: Set app secrets
         if: steps.creds.outputs.ready == 'true'
         env:
@@ -74,10 +82,7 @@ jobs:
           fi
           rm secrets.json
 
-      - name: Build and deploy
+      # Secrets only reach deployments made after they are set, so deploy once more.
+      - name: Redeploy with secrets
         if: steps.creds.outputs.ready == 'true'
-        run: |
-          npm run build
-          npx wrangler pages deploy --project-name "$PROJECT" --branch main --commit-dirty=true | tee deploy.log
-          url=$(grep -oE 'https://[a-z0-9.-]+\.pages\.dev' deploy.log | tail -1)
-          echo "### Deployed to https://$PROJECT.pages.dev (this build: $url)" >> "$GITHUB_STEP_SUMMARY"
+        run: npx wrangler pages deploy --project-name "$PROJECT" --branch main --commit-dirty=true
