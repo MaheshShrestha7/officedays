@@ -1,0 +1,15 @@
+name = "officedays"
+compatibility_date = "2026-09-01"
+pages_build_output_dir = "dist"
+
+[vars]
+# The desk QR "skeleton": only links on this host and path count as an office desk.
+QR_HOST = "virtual.floorsen.se"
+QR_PATH = "/scan-code"
+# QR_SITEKEY (your office's site key) and SIGNUP_CODE are set as secrets, see README.
+
+[[d1_databases]]
+binding = "DB"
+database_name = "officedays"
+database_id = "REPLACE_WITH_YOUR_D1_DATABASE_ID"
+migrations_dir = "migrations"
