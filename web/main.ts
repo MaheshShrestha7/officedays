@@ -1,13 +1,16 @@
-interface PeriodProgress { start: string; end: string; days: number; required: number | null }
+interface PeriodProgress { start: string; end: string; days: number; daysOff: number; required: number | null }
 interface Summary {
   user: { name: string; email: string; timezone: string };
-  target: { period: "week" | "month"; days_required: number } | null;
+  target: { period: "week" | "month"; days_required: number; workdays: string } | null;
   progress: { today: string; checkedInToday: boolean; week: PeriodProgress; month: PeriodProgress };
 }
-interface Checkin { local_date: string; desk_eui64: string | null; scanned_at: string; status: string }
+interface Checkin { local_date: string; desk_eui64: string | null; status: string }
+interface Leave { date: string; kind: "leave" | "holiday" | "sick" }
 
 const app = document.getElementById("app")!;
 let state: Summary | null = null;
+/** First day of the month shown in the calendar, "YYYY-MM-01". */
+let calMonth: string | null = null;
 
 const esc = (s: string) =>
   s.replace(/[&<>"']/g, (ch) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" })[ch]!);
@@ -100,6 +103,7 @@ function ring(p: PeriodProgress, label: string, otherPeriod: string): string {
   if (goal !== null) {
     const left = Math.max(goal - p.days, 0);
     hint = left === 0 ? "Target met" : `${left} more day${left === 1 ? "" : "s"} to go`;
+    if (p.daysOff) hint += ` · ${p.daysOff} off`;
   } else if (otherPeriod) {
     hint = `Target is per ${otherPeriod}`;
   }
@@ -141,30 +145,127 @@ async function renderHome() {
       ${ring(p.week, "This week", target?.period === "month" ? "month" : "")}
       ${ring(p.month, "This month", target?.period === "week" ? "week" : "")}
     </div>
-    <div class="card">
-      <h2>Recent office days</h2>
-      <ul class="list" id="history"><li class="sub">Loading…</li></ul>
-    </div>`;
+    <div class="card" id="calendar"></div>`;
   app.querySelector("#scan")!.addEventListener("click", openScanner);
   app.querySelector("#settings")!.addEventListener("click", renderSettings);
+  renderCalendar();
+}
 
-  const { checkins } = await api<{ checkins: Checkin[] }>("/checkins");
-  const list = app.querySelector("#history");
-  if (!list) return;
-  list.innerHTML = checkins.length
-    ? checkins.slice(0, 30).map((c) => `
-        <li>
-          <span>${prettyDate(c.local_date)}<br /><span class="sub">${esc(deskName(c.desk_eui64))}</span></span>
-          ${c.local_date === p.today ? `<button class="link" data-undo="${c.local_date}" type="button">Undo</button>` : ""}
-        </li>`).join("")
-    : `<li class="sub">No office days yet. Scan a desk QR when you're in.</li>`;
-  list.querySelectorAll<HTMLButtonElement>("[data-undo]").forEach((b) =>
-    b.addEventListener("click", async () => {
-      state = await api<Summary>(`/checkins/${b.dataset.undo}`, { method: "DELETE" });
-      toast("Removed today's check-in");
-      renderHome();
+/* ---------- Calendar ---------- */
+
+const KIND_LABEL: Record<string, string> = { leave: "Leave", holiday: "Public holiday", sick: "Sick" };
+const iso = (d: Date) => d.toISOString().slice(0, 10);
+
+function shiftMonth(first: string, by: number): string {
+  const d = new Date(`${first}T00:00:00Z`);
+  d.setUTCMonth(d.getUTCMonth() + by);
+  return iso(d);
+}
+
+async function renderCalendar() {
+  const el = app.querySelector<HTMLElement>("#calendar");
+  if (!el || !state) return;
+  const today = state.progress.today;
+  calMonth ??= `${today.slice(0, 7)}-01`;
+  const first = calMonth;
+  const last = iso(new Date(Date.UTC(+first.slice(0, 4), +first.slice(5, 7), 0)));
+  const title = new Date(`${first}T12:00:00Z`).toLocaleDateString(undefined, { month: "long", year: "numeric", timeZone: "UTC" });
+  const workdays = state.target?.workdays ?? "12345";
+
+  el.innerHTML = `
+    <div class="cal-head">
+      <button class="link" type="button" data-nav="-1" aria-label="Previous month">‹</button>
+      <h2>${esc(title)}</h2>
+      <button class="link" type="button" data-nav="1" aria-label="Next month">›</button>
+    </div>
+    <div class="cal-grid sub">Loading…</div>`;
+  el.querySelectorAll<HTMLButtonElement>("[data-nav]").forEach((b) =>
+    b.addEventListener("click", () => {
+      calMonth = shiftMonth(first, Number(b.dataset.nav));
+      renderCalendar();
     }),
   );
+
+  const { checkins, leave } = await api<{ checkins: Checkin[]; leave: Leave[] }>(`/days?from=${first}&to=${last}`);
+  if (calMonth !== first) return; // moved on while loading
+  const office = new Map(checkins.map((c) => [c.local_date, c]));
+  const off = new Map(leave.map((l) => [l.date, l.kind]));
+
+  const lead = (new Date(`${first}T00:00:00Z`).getUTCDay() + 6) % 7;
+  const cells: string[] = ["M", "T", "W", "T", "F", "S", "S"].map((d) => `<div class="cal-dow">${d}</div>`);
+  for (let i = 0; i < lead; i++) cells.push("<div></div>");
+  for (let day = 1; day <= +last.slice(8); day++) {
+    const date = `${first.slice(0, 8)}${String(day).padStart(2, "0")}`;
+    const wd = ((new Date(`${date}T00:00:00Z`).getUTCDay() + 6) % 7) + 1;
+    const c = office.get(date);
+    const k = off.get(date);
+    const cls = [
+      "cal-day",
+      c ? (c.status === "manual" ? "is-manual" : "is-office") : "",
+      k ? "is-off" : "",
+      date === today ? "is-today" : "",
+      date > today ? "is-future" : "",
+      workdays.includes(String(wd)) ? "" : "is-weekend",
+    ].join(" ");
+    const label = c ? (c.status === "manual" ? "office, added by hand" : "office") : k ? KIND_LABEL[k] : "no entry";
+    cells.push(`<button type="button" class="${cls}" data-date="${date}" aria-label="${prettyDate(date)}: ${label}">
+      ${day}${k ? `<span class="tag">${k === "holiday" ? "H" : k === "sick" ? "S" : "L"}</span>` : ""}</button>`);
+  }
+  el.querySelector(".cal-grid")!.outerHTML = `<div class="cal-grid">${cells.join("")}</div>
+    <p class="legend"><span class="dot office"></span>Office <span class="dot manual"></span>Added by hand <span class="dot off"></span>Leave, holiday or sick</p>
+    <p class="sub" style="margin:4px 0 0">Tap a day to add a missed office day or mark time off.</p>`;
+  el.querySelectorAll<HTMLButtonElement>("[data-date]").forEach((b) =>
+    b.addEventListener("click", () => {
+      const d = b.dataset.date!;
+      openDaySheet(d, office.get(d) ?? null, off.get(d) ?? null);
+    }),
+  );
+}
+
+function openDaySheet(date: string, checkin: Checkin | null, kind: string | null) {
+  const future = !!state && date > state.progress.today;
+  const current = checkin ? "office" : kind ?? "none";
+  const now = checkin
+    ? checkin.status === "manual" ? "Office day, added by hand" : `Office day, scanned at ${deskName(checkin.desk_eui64).toLowerCase()}`
+    : kind ? KIND_LABEL[kind] : "Nothing recorded";
+  const options: [string, string][] = [
+    ["office", "Office day"],
+    ["leave", "Leave"],
+    ["holiday", "Public holiday"],
+    ["sick", "Sick"],
+    ["none", "Clear"],
+  ];
+  const dlg = document.createElement("dialog");
+  dlg.className = "sheet";
+  dlg.innerHTML = `
+    <h2 style="color:var(--ink);font-size:17px">${prettyDate(date)}</h2>
+    <p class="sub" style="margin:0 0 12px">${esc(now)}</p>
+    <div class="sheet-options">
+      ${options
+        .filter(([t]) => !(t === "office" && future) && !(t === "none" && current === "none"))
+        .map(([t, l]) => `<button type="button" class="ghost${t === current ? " is-current" : ""}" data-type="${t}" ${t === current ? "disabled" : ""}>${t === current ? `✓ ${l}` : l}</button>`)
+        .join("")}
+    </div>
+    <button type="button" class="link full" data-close>Cancel</button>`;
+  document.body.append(dlg);
+  dlg.addEventListener("close", () => dlg.remove());
+  dlg.addEventListener("click", (e) => {
+    if (e.target === dlg) dlg.close(); // backdrop tap
+  });
+  dlg.querySelector("[data-close]")!.addEventListener("click", () => dlg.close());
+  dlg.querySelectorAll<HTMLButtonElement>("[data-type]").forEach((b) =>
+    b.addEventListener("click", async () => {
+      try {
+        state = await api<Summary>(`/days/${date}`, { method: "PUT", body: JSON.stringify({ type: b.dataset.type }) });
+        dlg.close();
+        renderHome();
+      } catch (err) {
+        dlg.close();
+        toast((err as Error).message, true);
+      }
+    }),
+  );
+  dlg.showModal();
 }
 
 /* ---------- Scanner ---------- */
@@ -293,6 +394,13 @@ function renderSettings() {
           </select>
         </div>
       </div>
+      <fieldset class="workdays">
+        <legend>Workdays</legend>
+        ${["Mon", "Tue", "Wed", "Thu", "Fri", "Sat", "Sun"]
+          .map((d, i) => `<label><input type="checkbox" name="wd" value="${i + 1}" ${(target?.workdays ?? "12345").includes(String(i + 1)) ? "checked" : ""} /><span>${d}</span></label>`)
+          .join("")}
+      </fieldset>
+      <p class="sub" style="margin:6px 0 0">Leave, holidays and sick days on a workday lower that week's or month's target.</p>
       <h2 style="margin-top:20px">You</h2>
       <label for="name">Name</label>
       <input id="name" name="name" value="${esc(user.name)}" />
@@ -302,10 +410,17 @@ function renderSettings() {
       <button class="full" type="submit">Save</button>
     </form>
     <div class="card">
-      <p class="sub" style="margin:0 0 12px">Signed in as ${esc(user.email)}</p>
+      <h2>App</h2>
+      <div class="stack">
+        <button class="ghost" id="install" type="button" hidden>Install app</button>
+        <p class="sub" id="install-ios" hidden style="margin:0">To install: tap the Share button in Safari, then <b>Add to Home Screen</b>.</p>
+        <a class="btn ghost" href="/api/export.csv" download>Export my days (CSV)</a>
+      </div>
+      <p class="sub" style="margin:16px 0 12px">Signed in as ${esc(user.email)}</p>
       <button class="ghost" id="logout" type="button">Sign out</button>
     </div>`;
   app.querySelector("#back")!.addEventListener("click", renderHome);
+  setupInstall();
   app.querySelector("#logout")!.addEventListener("click", async () => {
     await api("/logout", { method: "POST" });
     state = null;
@@ -314,7 +429,9 @@ function renderSettings() {
   const form = app.querySelector<HTMLFormElement>("#form")!;
   form.addEventListener("submit", async (e) => {
     e.preventDefault();
-    const body = Object.fromEntries(new FormData(form)) as Record<string, string>;
+    const data = new FormData(form);
+    const body = Object.fromEntries(data) as Record<string, string>;
+    body.workdays = data.getAll("wd").join("");
     try {
       state = await api<Summary>("/settings", {
         method: "PUT",
@@ -326,6 +443,40 @@ function renderSettings() {
       app.querySelector("#err")!.textContent = (err as Error).message;
     }
   });
+}
+
+/* ---------- Install (PWA) ---------- */
+
+let installPrompt: any = null;
+window.addEventListener("beforeinstallprompt", (e) => {
+  e.preventDefault(); // show our own button instead of the mini-infobar
+  installPrompt = e;
+  setupInstall();
+});
+
+const isStandalone = () =>
+  matchMedia("(display-mode: standalone)").matches || (navigator as any).standalone === true;
+
+function setupInstall() {
+  const btn = app.querySelector<HTMLButtonElement>("#install");
+  const ios = app.querySelector<HTMLElement>("#install-ios");
+  if (!btn || !ios || isStandalone()) return;
+  if (installPrompt) {
+    btn.hidden = false;
+    btn.onclick = async () => {
+      installPrompt.prompt();
+      const { outcome } = await installPrompt.userChoice;
+      installPrompt = null;
+      btn.hidden = true;
+      if (outcome === "accepted") toast("Installed. Open OfficeDays from your home screen.");
+    };
+  } else if (/iphone|ipad|ipod/i.test(navigator.userAgent)) {
+    ios.hidden = false;
+  }
+}
+
+if ("serviceWorker" in navigator) {
+  navigator.serviceWorker.register("/sw.js").catch(() => {});
 }
 
 /* ---------- Start ---------- */

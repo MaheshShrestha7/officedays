@@ -46,3 +46,14 @@ export function monthRange(date: string): { start: string; end: string } {
   const end = new Date(Date.UTC(d.getUTCFullYear(), d.getUTCMonth() + 1, 0));
   return { start: fmt(start), end: fmt(end) };
 }
+
+/** 1 = Monday ... 7 = Sunday. */
+export function isoWeekday(date: string): number {
+  return ((toUtc(date).getUTCDay() + 6) % 7) + 1;
+}
+
+export function isValidDate(date: string): boolean {
+  if (!/^\d{4}-\d{2}-\d{2}$/.test(date)) return false;
+  const d = toUtc(date);
+  return !Number.isNaN(d.getTime()) && fmt(d) === date;
+}

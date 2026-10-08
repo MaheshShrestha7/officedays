@@ -2,12 +2,14 @@ name: Deploy to Cloudflare
 
 # Runs on every push to main, or by hand from the Actions tab.
 # First run creates the D1 database and the Pages project; later runs just update them.
+# Pull requests only run the checks; they never deploy.
 on:
   push:
     branches: [main]
+  pull_request:
   workflow_dispatch:
 
-concurrency: deploy
+concurrency: deploy-${{ github.event_name == 'pull_request' && github.ref || 'main' }}
 
 jobs:
   deploy:
@@ -32,7 +34,10 @@ jobs:
       - name: Check Cloudflare secrets
         id: creds
         run: |
-          if [ -z "$CLOUDFLARE_API_TOKEN" ] || [ -z "$CLOUDFLARE_ACCOUNT_ID" ]; then
+          if [ "${{ github.event_name }}" = "pull_request" ]; then
+            echo "Pull request: checks only, no deploy."
+            echo "ready=false" >> "$GITHUB_OUTPUT"
+          elif [ -z "$CLOUDFLARE_API_TOKEN" ] || [ -z "$CLOUDFLARE_ACCOUNT_ID" ]; then
             echo "::warning::CLOUDFLARE_API_TOKEN or CLOUDFLARE_ACCOUNT_ID is not set, so nothing was deployed. See the README."
             echo "ready=false" >> "$GITHUB_OUTPUT"
           else
