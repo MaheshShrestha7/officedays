@@ -85,4 +85,10 @@ jobs:
       # Secrets only reach deployments made after they are set, so deploy once more.
       - name: Redeploy with secrets
         if: steps.creds.outputs.ready == 'true'
-        run: npx wrangler pages deploy --project-name "$PROJECT" --branch main --commit-dirty=true
+        # Retries because the Pages API sometimes answers 500 right after secrets change.
+        run: |
+          for i in 1 2 3; do
+            npx wrangler pages deploy --project-name "$PROJECT" --branch main --commit-dirty=true && exit 0
+            sleep $((i * 10))
+          done
+          exit 1
