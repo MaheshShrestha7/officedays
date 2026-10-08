@@ -14,6 +14,14 @@ https://virtual.floorsen.se/scan-code?eui64=<16 hex desk id>&sitekey=<office sit
 
 Only the desk id changes between desks, so the API accepts a scan when the host, path and site key match and the desk id is 16 hex characters (`src/server/qr.ts`). One check-in per person per day; scanning again the same day does nothing.
 
+## Features
+
+- Scan any office desk QR to log the day.
+- Your own target: N days per week or per month, on the weekdays you pick.
+- Month calendar: tap a day to add a missed office day, or mark leave, a public holiday or a sick day. Days off on a workday lower that week's or month's target.
+- Export all your days as CSV from Settings.
+- Installable app (PWA): an Install button in Settings on Android and desktop Chrome; on iPhone use Share → Add to Home Screen.
+
 ## Deploy from your phone (GitHub Actions)
 
 Every push to `main` deploys automatically through `.github/workflows/deploy.yml`. The first run creates the D1 database, its tables and the Pages project for you. One-time setup, all doable in a phone browser:

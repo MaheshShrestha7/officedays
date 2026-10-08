@@ -93,3 +93,50 @@ input, select {
   padding: 14px 16px; border-radius: 14px; background: var(--ink); color: var(--bg); font-weight: 600;
 }
 .toast.bad { background: var(--bad); color: #fff; }
+
+/* Calendar */
+.cal-head { display: flex; align-items: center; justify-content: space-between; margin-bottom: 8px; }
+.cal-head h2 { margin: 0; color: var(--ink); font-size: 16px; }
+.cal-head .link { font-size: 22px; line-height: 1; padding: 4px 12px; }
+.cal-grid { display: grid; grid-template-columns: repeat(7, 1fr); gap: 4px; }
+.cal-dow { text-align: center; font-size: 12px; color: var(--muted); padding-bottom: 2px; }
+.cal-day {
+  position: relative; aspect-ratio: 1; padding: 0; border-radius: 10px; font-weight: 500; font-size: 14px;
+  background: transparent; color: var(--ink); border: 1px solid transparent;
+}
+.cal-day.is-weekend { color: var(--muted); }
+.cal-day.is-future { opacity: 0.55; }
+.cal-day.is-today { border-color: var(--ink); }
+.cal-day.is-office { background: var(--brand); color: var(--brand-ink); }
+.cal-day.is-manual { background: color-mix(in srgb, var(--brand) 22%, transparent); border: 1.5px dashed var(--brand); }
+.cal-day.is-off { background: var(--track); color: var(--muted); }
+.cal-day .tag { position: absolute; right: 4px; bottom: 2px; font-size: 9px; font-weight: 700; }
+.legend { display: flex; flex-wrap: wrap; align-items: center; gap: 6px 10px; font-size: 12.5px; color: var(--muted); margin: 12px 0 0; }
+.dot { display: inline-block; width: 10px; height: 10px; border-radius: 3px; margin-right: -4px; }
+.dot.office { background: var(--brand); }
+.dot.manual { border: 1.5px dashed var(--brand); }
+.dot.off { background: var(--track); border: 1px solid var(--line); }
+
+/* Day sheet */
+dialog.sheet {
+  border: 0; border-radius: 18px 18px 0 0; margin: auto auto 0; width: 100%; max-width: 480px;
+  padding: 20px 16px max(16px, env(safe-area-inset-bottom)); background: var(--card); color: var(--ink);
+}
+dialog.sheet::backdrop { background: rgba(0, 0, 0, 0.4); }
+.sheet-options { display: grid; gap: 8px; }
+.sheet-options button.is-current { opacity: 1; border-color: var(--brand); background: color-mix(in srgb, var(--brand) 12%, transparent); }
+
+/* Settings */
+fieldset.workdays { border: 0; padding: 0; margin: 16px 0 0; display: grid; grid-template-columns: repeat(7, 1fr); gap: 4px; }
+fieldset.workdays legend { font-size: 14px; font-weight: 600; margin-bottom: 6px; padding: 0; }
+fieldset.workdays label { margin: 0; font-weight: 500; }
+fieldset.workdays input { position: absolute; opacity: 0; width: 1px; height: 1px; }
+fieldset.workdays span {
+  display: block; text-align: center; padding: 9px 0; border-radius: 10px; font-size: 13px;
+  border: 1px solid var(--line); color: var(--muted); cursor: pointer;
+}
+fieldset.workdays input:checked + span { background: var(--brand); color: var(--brand-ink); border-color: var(--brand); }
+fieldset.workdays input:focus-visible + span { outline: 2px solid var(--brand); outline-offset: 2px; }
+.stack { display: grid; gap: 8px; }
+a.btn { display: block; text-align: center; text-decoration: none; }
+a.btn.ghost { background: transparent; color: var(--brand); border: 1px solid var(--line); }
