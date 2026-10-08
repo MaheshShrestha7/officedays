@@ -2,8 +2,11 @@ import { Hono } from "hono";
 import { deleteCookie, getCookie, setCookie } from "hono/cookie";
 import { hashPassword, randomHex, sha256Hex, verifyPassword } from "./auth";
 import { addDays, isValidDate, isValidTimezone, localDate, monthRange } from "./dates";
+import { history, type TargetRow } from "./history";
+import { buildCalendar, type CalendarEvent } from "./ical";
 import { checkDeskQr } from "./qr";
 import { progress, type Target } from "./stats";
+import { getVapidKeys } from "./vapid";
 
 export interface Env {
   DB: D1Database;
@@ -18,6 +21,9 @@ interface User {
   email: string;
   name: string;
   timezone: string;
+  created_at: string;
+  remind_day: number | null;
+  remind_hour: number;
 }
 
 type App = { Bindings: Env; Variables: { user: User } };
@@ -100,12 +106,47 @@ app.post("/logout", async (c) => {
   return c.json({ ok: true });
 });
 
+const KIND_LABEL: Record<string, string> = { leave: "Leave", holiday: "Public holiday", sick: "Sick" };
+
+// Private calendar feed. Calendar apps can't sign in, so the secret token in the URL is the key.
+app.get("/calendar/:file", async (c) => {
+  const token = c.req.param("file").replace(/\.ics$/, "");
+  if (!/^[0-9a-f]{40}$/.test(token)) return c.text("Not found", 404);
+  const user = await c.env.DB.prepare("SELECT id, timezone FROM users WHERE calendar_token = ?")
+    .bind(token)
+    .first<{ id: number; timezone: string }>();
+  if (!user) return c.text("Not found", 404);
+  const from = addDays(localDate(user.timezone), -400);
+  const [office, leave] = await c.env.DB.batch([
+    c.env.DB.prepare(
+      `SELECT c.local_date, c.desk_eui64, d.name FROM checkins c LEFT JOIN desk_names d ON d.eui64 = c.desk_eui64
+       WHERE c.user_id = ? AND c.local_date >= ?`,
+    ).bind(user.id, from),
+    c.env.DB.prepare("SELECT date, kind FROM leave_days WHERE user_id = ? AND date >= ?").bind(user.id, from),
+  ]);
+  const events: CalendarEvent[] = [
+    ...office.results.map((r: any) => ({
+      date: r.local_date,
+      uid: `office-${r.local_date}-${user.id}@officedays`,
+      summary: r.name ? `Office · desk ${r.name}` : "Office",
+    })),
+    ...leave.results.map((r: any) => ({
+      date: r.date,
+      uid: `off-${r.date}-${user.id}@officedays`,
+      summary: KIND_LABEL[r.kind] ?? "Day off",
+    })),
+  ];
+  return new Response(buildCalendar("OfficeDays", events), {
+    headers: { "content-type": "text/calendar; charset=utf-8", "cache-control": "private, max-age=900" },
+  });
+});
+
 // Everything below needs a signed-in user.
 app.use("*", async (c, next) => {
   const token = getCookie(c, COOKIE);
   const user = token
     ? await c.env.DB.prepare(
-        `SELECT u.id, u.email, u.name, u.timezone FROM sessions s JOIN users u ON u.id = s.user_id
+        `SELECT u.id, u.email, u.name, u.timezone, u.created_at, u.remind_day, u.remind_hour FROM sessions s JOIN users u ON u.id = s.user_id
          WHERE s.token_hash = ? AND s.expires_at > ?`,
       )
         .bind(await sha256Hex(token), new Date().toISOString())
@@ -138,7 +179,17 @@ async function summary(c: any) {
   const dates = rows.results.map((r: { local_date: string }) => r.local_date);
   const leaveDates = leave.results.map((r: { date: string }) => r.date);
   const target = await currentTarget(c.env.DB, user.id, today);
-  return { user, target, progress: progress(today, dates, target, leaveDates) };
+  const push: { n: number } | null = await c.env.DB.prepare(
+    "SELECT COUNT(*) AS n FROM push_subscriptions WHERE user_id = ?",
+  )
+    .bind(user.id)
+    .first();
+  return {
+    user: { name: user.name, email: user.email, timezone: user.timezone, remind_day: user.remind_day, remind_hour: user.remind_hour },
+    target,
+    pushDevices: push?.n ?? 0,
+    progress: progress(today, dates, target, leaveDates),
+  };
 }
 
 app.get("/me", async (c) => c.json(await summary(c)));
@@ -161,7 +212,8 @@ app.post("/checkin", async (c) => {
   )
     .bind(user.id, today, result.desk, country)
     .first();
-  return c.json({ ...(await summary(c)), desk: result.desk, alreadyCheckedIn: !inserted });
+  const named = await c.env.DB.prepare("SELECT name FROM desk_names WHERE eui64 = ?").bind(result.desk).first<{ name: string }>();
+  return c.json({ ...(await summary(c)), desk: result.desk, deskName: named?.name ?? null, alreadyCheckedIn: !inserted });
 });
 
 app.get("/checkins", async (c) => {
@@ -195,8 +247,18 @@ app.put("/settings", async (c) => {
   if (!workdays) return c.json({ error: "Pick at least one workday." }, 400);
   const timezone = isValidTimezone(String(body.timezone ?? "")) ? String(body.timezone) : user.timezone;
   const name = String(body.name ?? "").trim() || user.name;
-  await c.env.DB.prepare("UPDATE users SET name = ?, timezone = ? WHERE id = ?").bind(name, timezone, user.id).run();
-  c.set("user", { ...user, name, timezone });
+  // Reminder: day 1-7 or null for off, hour 0-23. Left as they are when not sent.
+  const remindDay =
+    body.remind_day === undefined ? user.remind_day : body.remind_day === null ? null : Number(body.remind_day);
+  const remindHour = body.remind_hour === undefined ? user.remind_hour : Number(body.remind_hour);
+  if ((remindDay !== null && !(Number.isInteger(remindDay) && remindDay >= 1 && remindDay <= 7)) ||
+      !(Number.isInteger(remindHour) && remindHour >= 0 && remindHour <= 23)) {
+    return c.json({ error: "Pick a valid reminder day and time." }, 400);
+  }
+  await c.env.DB.prepare("UPDATE users SET name = ?, timezone = ?, remind_day = ?, remind_hour = ? WHERE id = ?")
+    .bind(name, timezone, remindDay, remindHour, user.id)
+    .run();
+  c.set("user", { ...user, name, timezone, remind_day: remindDay, remind_hour: remindHour });
 
   const today = localDate(timezone);
   const current = await currentTarget(c.env.DB, user.id, today);
@@ -218,7 +280,9 @@ app.get("/days", async (c) => {
   if (!isValidDate(from) || !isValidDate(to)) return c.json({ error: "Pick a valid date range." }, 400);
   const [checkins, leave] = await c.env.DB.batch([
     c.env.DB.prepare(
-      "SELECT local_date, desk_eui64, status FROM checkins WHERE user_id = ? AND local_date BETWEEN ? AND ? ORDER BY local_date",
+      `SELECT c.local_date, c.desk_eui64, d.name AS desk_name, c.status FROM checkins c
+       LEFT JOIN desk_names d ON d.eui64 = c.desk_eui64
+       WHERE c.user_id = ? AND c.local_date BETWEEN ? AND ? ORDER BY c.local_date`,
     ).bind(user.id, from, to),
     c.env.DB.prepare("SELECT date, kind FROM leave_days WHERE user_id = ? AND date BETWEEN ? AND ? ORDER BY date").bind(
       user.id,
@@ -297,4 +361,105 @@ app.get("/export.csv", async (c) => {
       "content-disposition": `attachment; filename="officedays-${localDate(user.timezone)}.csv"`,
     },
   });
+});
+
+/* ---------- Stats ---------- */
+
+app.get("/stats", async (c) => {
+  const user = c.get("user");
+  const today = localDate(user.timezone);
+  const since = localDate(user.timezone, new Date(`${user.created_at.replace(" ", "T")}Z`));
+  const from = addDays(today, -400);
+  const [checkins, leave, targets, desks] = await c.env.DB.batch([
+    c.env.DB.prepare("SELECT local_date FROM checkins WHERE user_id = ? AND local_date >= ?").bind(user.id, from),
+    c.env.DB.prepare("SELECT date FROM leave_days WHERE user_id = ? AND date >= ?").bind(user.id, from),
+    c.env.DB.prepare(
+      "SELECT period, days_required, workdays, effective_from FROM targets WHERE user_id = ? ORDER BY effective_from, id",
+    ).bind(user.id),
+    c.env.DB.prepare(
+      `SELECT c.desk_eui64 AS eui64, d.name, COUNT(*) AS days, MAX(c.local_date) AS last
+       FROM checkins c LEFT JOIN desk_names d ON d.eui64 = c.desk_eui64
+       WHERE c.user_id = ? AND c.desk_eui64 IS NOT NULL
+       GROUP BY c.desk_eui64 ORDER BY days DESC, last DESC LIMIT 5`,
+    ).bind(user.id),
+  ]);
+  // Days added by hand can predate the account; start from whichever is earlier.
+  const earliest = [since, ...checkins.results.map((r: any) => r.local_date)].sort()[0];
+  const h = history(
+    today,
+    earliest,
+    checkins.results.map((r: any) => r.local_date),
+    leave.results.map((r: any) => r.date),
+    targets.results as unknown as TargetRow[],
+  );
+  return c.json({ ...h, topDesks: desks.results });
+});
+
+/* ---------- Desk names ---------- */
+
+app.put("/desks/:eui64", async (c) => {
+  const user = c.get("user");
+  const eui64 = c.req.param("eui64").toLowerCase();
+  const body = await c.req.json().catch(() => ({}));
+  const name = String(body.name ?? "").trim().slice(0, 40);
+  if (!/^[0-9a-f]{16}$/.test(eui64)) return c.json({ error: "Unknown desk." }, 400);
+  if (!name) {
+    await c.env.DB.prepare("DELETE FROM desk_names WHERE eui64 = ?").bind(eui64).run();
+    return c.json({ eui64, name: null });
+  }
+  // Only desks someone has actually scanned can be named.
+  const seen = await c.env.DB.prepare("SELECT 1 FROM checkins WHERE desk_eui64 = ? LIMIT 1").bind(eui64).first();
+  if (!seen) return c.json({ error: "Scan this desk before naming it." }, 404);
+  await c.env.DB.prepare(
+    `INSERT INTO desk_names (eui64, name, named_by) VALUES (?, ?, ?)
+     ON CONFLICT (eui64) DO UPDATE SET name = excluded.name, named_by = excluded.named_by, updated_at = datetime('now')`,
+  )
+    .bind(eui64, name, user.id)
+    .run();
+  return c.json({ eui64, name });
+});
+
+/* ---------- Push reminders ---------- */
+
+app.get("/push/key", async (c) => c.json({ publicKey: (await getVapidKeys(c.env.DB)).publicKey }));
+
+app.post("/push/subscribe", async (c) => {
+  const user = c.get("user");
+  const body = await c.req.json().catch(() => ({}));
+  const endpoint = String(body.endpoint ?? "");
+  const p256dh = String(body.keys?.p256dh ?? "");
+  const auth = String(body.keys?.auth ?? "");
+  if (!endpoint.startsWith("https://") || !p256dh || !auth) return c.json({ error: "That push subscription is not valid." }, 400);
+  await c.env.DB.prepare(
+    `INSERT INTO push_subscriptions (endpoint, user_id, p256dh, auth) VALUES (?, ?, ?, ?)
+     ON CONFLICT (endpoint) DO UPDATE SET user_id = excluded.user_id, p256dh = excluded.p256dh, auth = excluded.auth`,
+  )
+    .bind(endpoint, user.id, p256dh, auth)
+    .run();
+  return c.json(await summary(c));
+});
+
+app.post("/push/unsubscribe", async (c) => {
+  const user = c.get("user");
+  const body = await c.req.json().catch(() => ({}));
+  await c.env.DB.prepare("DELETE FROM push_subscriptions WHERE user_id = ? AND endpoint = ?")
+    .bind(user.id, String(body.endpoint ?? ""))
+    .run();
+  return c.json(await summary(c));
+});
+
+/* ---------- Calendar sync ---------- */
+
+app.get("/calendar-link", async (c) => {
+  const user = c.get("user");
+  const row = await c.env.DB.prepare("SELECT calendar_token FROM users WHERE id = ?").bind(user.id).first<{ calendar_token: string | null }>();
+  return c.json({ token: row?.calendar_token ?? null });
+});
+
+// Creates the link, or replaces it so the old one stops working.
+app.post("/calendar-link", async (c) => {
+  const user = c.get("user");
+  const token = randomHex(20);
+  await c.env.DB.prepare("UPDATE users SET calendar_token = ? WHERE id = ?").bind(token, user.id).run();
+  return c.json({ token });
 });

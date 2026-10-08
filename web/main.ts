@@ -1,10 +1,11 @@
 interface PeriodProgress { start: string; end: string; days: number; daysOff: number; required: number | null }
 interface Summary {
-  user: { name: string; email: string; timezone: string };
+  user: { name: string; email: string; timezone: string; remind_day: number | null; remind_hour: number };
+  pushDevices: number;
   target: { period: "week" | "month"; days_required: number; workdays: string } | null;
   progress: { today: string; checkedInToday: boolean; week: PeriodProgress; month: PeriodProgress };
 }
-interface Checkin { local_date: string; desk_eui64: string | null; status: string }
+interface Checkin { local_date: string; desk_eui64: string | null; desk_name?: string | null; status: string }
 interface Leave { date: string; kind: "leave" | "holiday" | "sick" }
 
 const app = document.getElementById("app")!;
@@ -46,7 +47,8 @@ function prettyDate(d: string): string {
   });
 }
 
-const deskName = (eui?: string | null) => (eui ? `Desk …${eui.slice(-4)}` : "Added manually");
+const deskName = (eui?: string | null, name?: string | null) =>
+  name ? `desk ${name}` : eui ? `desk …${eui.slice(-4)}` : "added by hand";
 
 /* ---------- Sign in ---------- */
 
@@ -132,7 +134,7 @@ async function renderHome() {
   app.innerHTML = `
     <div class="top">
       <h1>Hi, ${esc(user.name.split(" ")[0])}</h1>
-      <button class="link" id="settings" type="button">Settings</button>
+      <span><button class="link" id="stats" type="button">Stats</button><button class="link" id="settings" type="button">Settings</button></span>
     </div>
     <div class="card">
       <button class="scan-btn" id="scan" type="button">
@@ -148,6 +150,7 @@ async function renderHome() {
     <div class="card" id="calendar"></div>`;
   app.querySelector("#scan")!.addEventListener("click", openScanner);
   app.querySelector("#settings")!.addEventListener("click", renderSettings);
+  app.querySelector("#stats")!.addEventListener("click", renderStats);
   renderCalendar();
 }
 
@@ -226,7 +229,7 @@ function openDaySheet(date: string, checkin: Checkin | null, kind: string | null
   const future = !!state && date > state.progress.today;
   const current = checkin ? "office" : kind ?? "none";
   const now = checkin
-    ? checkin.status === "manual" ? "Office day, added by hand" : `Office day, scanned at ${deskName(checkin.desk_eui64).toLowerCase()}`
+    ? checkin.status === "manual" ? "Office day, added by hand" : `Office day, scanned at ${deskName(checkin.desk_eui64, checkin.desk_name)}`
     : kind ? KIND_LABEL[kind] : "Nothing recorded";
   const options: [string, string][] = [
     ["office", "Office day"],
@@ -246,8 +249,13 @@ function openDaySheet(date: string, checkin: Checkin | null, kind: string | null
         .map(([t, l]) => `<button type="button" class="ghost${t === current ? " is-current" : ""}" data-type="${t}" ${t === current ? "disabled" : ""}>${t === current ? `✓ ${l}` : l}</button>`)
         .join("")}
     </div>
+    ${checkin?.desk_eui64 ? `<button type="button" class="link full" data-desk>${checkin.desk_name ? "Rename desk" : "Name this desk"}</button>` : ""}
     <button type="button" class="link full" data-close>Cancel</button>`;
   document.body.append(dlg);
+  dlg.querySelector("[data-desk]")?.addEventListener("click", () => {
+    dlg.close();
+    openDeskName(checkin!.desk_eui64!, checkin!.desk_name ?? null);
+  });
   dlg.addEventListener("close", () => dlg.remove());
   dlg.addEventListener("click", (e) => {
     if (e.target === dlg) dlg.close(); // backdrop tap
@@ -343,7 +351,7 @@ async function openScanner() {
   const submit = async (qr: string) => {
     msg.textContent = "Checking…";
     try {
-      const res = await api<Summary & { alreadyCheckedIn: boolean; desk: string }>("/checkin", {
+      const res = await api<Summary & { alreadyCheckedIn: boolean; desk: string; deskName: string | null }>("/checkin", {
         method: "POST",
         body: JSON.stringify({ qr }),
       });
@@ -353,8 +361,9 @@ async function openScanner() {
       const w = res.progress.week;
       toast(res.alreadyCheckedIn
         ? "Already checked in today"
-        : `Checked in at ${deskName(res.desk).toLowerCase()}. ${w.days}${w.required !== null ? ` of ${w.required}` : ""} this week.`);
+        : `Checked in at ${deskName(res.desk, res.deskName)}. ${w.days}${w.required !== null ? ` of ${w.required}` : ""} this week.`);
       renderHome();
+      if (!res.deskName) openDeskName(res.desk, null);
     } catch (err) {
       msg.textContent = (err as Error).message;
       // Let them try another code after a short pause.
@@ -409,6 +418,8 @@ function renderSettings() {
       <p class="error" id="err"></p>
       <button class="full" type="submit">Save</button>
     </form>
+    <div class="card" id="reminders"></div>
+    <div class="card" id="calsync"></div>
     <div class="card">
       <h2>App</h2>
       <div class="stack">
@@ -421,6 +432,8 @@ function renderSettings() {
     </div>`;
   app.querySelector("#back")!.addEventListener("click", renderHome);
   setupInstall();
+  renderReminders();
+  renderCalendarSync();
   app.querySelector("#logout")!.addEventListener("click", async () => {
     await api("/logout", { method: "POST" });
     state = null;
@@ -479,8 +492,279 @@ if ("serviceWorker" in navigator) {
   navigator.serviceWorker.register("/sw.js").catch(() => {});
 }
 
+/* ---------- Desk names ---------- */
+
+function openDeskName(eui64: string, current: string | null) {
+  const dlg = document.createElement("dialog");
+  dlg.className = "sheet";
+  dlg.innerHTML = `
+    <form method="dialog" id="desk-form">
+      <h2 style="color:var(--ink);font-size:17px">${current ? "Rename this desk" : "Name this desk?"}</h2>
+      <p class="sub" style="margin:0 0 4px">Use the number printed on the desk label, like 24.002. Everyone who scans this desk will see it.</p>
+      <label for="desk-name">Desk name</label>
+      <input id="desk-name" name="name" maxlength="40" autocomplete="off" value="${esc(current ?? "")}" placeholder="24.002" />
+      <div class="sheet-options" style="margin-top:16px">
+        <button type="submit">Save</button>
+        <button type="button" class="link" data-close>${current ? "Cancel" : "Skip"}</button>
+      </div>
+    </form>`;
+  document.body.append(dlg);
+  dlg.addEventListener("close", () => dlg.remove());
+  dlg.querySelector("[data-close]")!.addEventListener("click", () => dlg.close());
+  dlg.querySelector("form")!.addEventListener("submit", async (e) => {
+    e.preventDefault();
+    const name = (dlg.querySelector("#desk-name") as HTMLInputElement).value.trim();
+    try {
+      await api(`/desks/${eui64}`, { method: "PUT", body: JSON.stringify({ name }) });
+      dlg.close();
+      if (name) toast(`Saved as desk ${name}`);
+      if (app.querySelector("#calendar")) renderCalendar();
+      if (app.querySelector("#statsview")) renderStats();
+    } catch (err) {
+      toast((err as Error).message, true);
+    }
+  });
+  dlg.showModal();
+  (dlg.querySelector("#desk-name") as HTMLInputElement).focus();
+}
+
+/* ---------- Stats ---------- */
+
+interface PeriodResult { start: string; end: string; days: number; required: number | null; met: boolean | null }
+interface Stats {
+  weeks: PeriodResult[];
+  months: PeriodResult[];
+  streak: number;
+  streakUnit: "week" | "month";
+  hit: { met: number; total: number };
+  totalDays: number;
+  topDesks: { eui64: string; name: string | null; days: number; last: string }[];
+}
+
+function monthChart(months: PeriodResult[]): string {
+  const W = 340, H = 150, top = 22, bottom = 22, left = 4, right = 4;
+  const max = Math.max(4, ...months.map((m) => m.days), ...months.map((m) => m.required ?? 0));
+  const step = (W - left - right) / months.length;
+  const bw = Math.min(22, step - 4);
+  const y = (v: number) => top + (H - top - bottom) * (1 - v / max);
+  const label = (m: PeriodResult) =>
+    new Date(`${m.start}T12:00:00Z`).toLocaleDateString(undefined, { month: "short", timeZone: "UTC" });
+  const bars = months.map((m, i) => {
+    const x = left + i * step + (step - bw) / 2;
+    const h = Math.max(H - bottom - y(m.days), m.days ? 2 : 0);
+    const last = i === months.length - 1;
+    const r = Math.min(4, h / 2);
+    const path = h
+      ? `M${x},${H - bottom} V${H - bottom - h + r} q0,-${r} ${r},-${r} H${x + bw - r} q${r},0 ${r},${r} V${H - bottom} Z`
+      : "";
+    return `<g class="bar">
+      <rect x="${left + i * step}" y="${top}" width="${step}" height="${H - top}" fill="transparent" />
+      ${path ? `<path d="${path}" fill="var(--brand)" opacity="${last ? 1 : 0.75}" />` : ""}
+      ${m.required !== null ? `<line x1="${x - 2}" x2="${x + bw + 2}" y1="${y(m.required)}" y2="${y(m.required)}" stroke="var(--ink)" stroke-width="1.5" stroke-dasharray="3 2" />` : ""}
+      ${last || m.days === max ? `<text x="${x + bw / 2}" y="${H - bottom - h - 6}" text-anchor="middle" font-size="11" font-weight="600" fill="var(--ink)">${m.days}</text>` : ""}
+      <text x="${x + bw / 2}" y="${H - 6}" text-anchor="middle" font-size="10" fill="var(--muted)">${label(m)}</text>
+      <title>${label(m)}: ${m.days} office day${m.days === 1 ? "" : "s"}${m.required !== null ? ` of ${m.required}` : ""}</title>
+    </g>`;
+  });
+  return `<svg viewBox="0 0 ${W} ${H}" class="chart" role="img" aria-label="Office days per month">
+    <line x1="0" x2="${W}" y1="${H - bottom}" y2="${H - bottom}" stroke="var(--line)" />
+    ${bars.join("")}
+  </svg>`;
+}
+
+async function renderStats() {
+  app.innerHTML = `
+    <div class="top" id="statsview"><h1>Stats</h1><button class="link" id="back" type="button">Done</button></div>
+    <div class="card sub">Loading…</div>`;
+  app.querySelector("#back")!.addEventListener("click", renderHome);
+  const s = await api<Stats>("/stats");
+  if (!app.querySelector("#statsview")) return;
+  const rate = s.hit.total ? Math.round((100 * s.hit.met) / s.hit.total) : null;
+  const unit = s.streakUnit;
+  const weeks = s.weeks.slice(-12);
+  const anyMonthlyTarget = s.months.some((m) => m.required !== null);
+  app.innerHTML = `
+    <div class="top" id="statsview"><h1>Stats</h1><button class="link" id="back" type="button">Done</button></div>
+    <div class="tiles">
+      <div class="tile"><div class="big">${s.streak}</div><div class="sub">${unit}${s.streak === 1 ? "" : "s"} in a row on target</div></div>
+      <div class="tile"><div class="big">${rate === null ? "–" : `${rate}%`}</div><div class="sub">${rate === null ? "no finished " + unit + "s yet" : `${s.hit.met} of ${s.hit.total} ${unit}s on target`}</div></div>
+      <div class="tile"><div class="big">${s.totalDays}</div><div class="sub">office days in the last year</div></div>
+    </div>
+    <div class="card">
+      <h2>Office days per month</h2>
+      ${monthChart(s.months)}
+      ${anyMonthlyTarget ? `<p class="legend"><span class="dash"></span>Monthly target</p>` : ""}
+    </div>
+    <div class="card">
+      <h2>Recent weeks</h2>
+      <div class="weeks">${weeks
+        .map((w) => {
+          const cls = w.met === true ? "met" : w.met === false ? "missed" : "open";
+          const date = new Date(`${w.start}T12:00:00Z`).toLocaleDateString(undefined, { day: "numeric", month: "short", timeZone: "UTC" });
+          const status = w.met === true ? "on target" : w.met === false ? "missed" : w.required === null ? "no weekly target" : "in progress";
+          return `<div class="wk ${cls}" title="Week of ${date}: ${w.days} day${w.days === 1 ? "" : "s"}, ${status}">
+            <span class="n">${w.days}${w.required !== null ? `<small>/${w.required}</small>` : ""}</span><span class="d">${date}</span></div>`;
+        })
+        .join("")}</div>
+      <p class="legend"><span class="dot office"></span>On target <span class="dot missed"></span>Missed <span class="dot off"></span>In progress</p>
+    </div>
+    <div class="card">
+      <h2>Your desks</h2>
+      <ul class="list">${s.topDesks.length
+        ? s.topDesks
+            .map((d) => `<li><span>${d.name ? `Desk ${esc(d.name)}` : `Unnamed desk …${d.eui64.slice(-4)}`}<br />
+              <span class="sub">${d.days} day${d.days === 1 ? "" : "s"} · last ${prettyDate(d.last)}</span></span>
+              <button class="link" type="button" data-desk="${d.eui64}" data-name="${esc(d.name ?? "")}">${d.name ? "Rename" : "Name it"}</button></li>`)
+            .join("")
+        : `<li class="sub">Scan a desk to see it here.</li>`}</ul>
+    </div>`;
+  app.querySelector("#back")!.addEventListener("click", renderHome);
+  app.querySelectorAll<HTMLButtonElement>("[data-desk]").forEach((b) =>
+    b.addEventListener("click", () => openDeskName(b.dataset.desk!, b.dataset.name || null)),
+  );
+}
+
+/* ---------- Reminders (web push) ---------- */
+
+const DAY_NAMES = ["Monday", "Tuesday", "Wednesday", "Thursday", "Friday", "Saturday", "Sunday"];
+
+function b64ToBytes(b64url: string): Uint8Array<ArrayBuffer> {
+  const b64 = b64url.replace(/-/g, "+").replace(/_/g, "/").padEnd(Math.ceil(b64url.length / 4) * 4, "=");
+  const bin = atob(b64);
+  const out = new Uint8Array(bin.length);
+  for (let i = 0; i < bin.length; i++) out[i] = bin.charCodeAt(i);
+  return out;
+}
+
+async function currentPushSub(): Promise<PushSubscription | null> {
+  if (!("serviceWorker" in navigator) || !("PushManager" in window)) return null;
+  const reg = await navigator.serviceWorker.ready;
+  return reg.pushManager.getSubscription();
+}
+
+async function saveSettings(extra: Record<string, unknown>) {
+  if (!state) return;
+  const { user, target } = state;
+  state = await api<Summary>("/settings", {
+    method: "PUT",
+    body: JSON.stringify({
+      name: user.name,
+      timezone: user.timezone,
+      period: target?.period ?? "week",
+      days_required: target?.days_required ?? 3,
+      workdays: target?.workdays ?? "12345",
+      ...extra,
+    }),
+  });
+}
+
+async function renderReminders() {
+  const el = app.querySelector<HTMLElement>("#reminders");
+  if (!el || !state) return;
+  const supported = "serviceWorker" in navigator && "PushManager" in window && "Notification" in window;
+  const ios = /iphone|ipad|ipod/i.test(navigator.userAgent);
+  const sub = supported ? await currentPushSub() : null;
+  const on = !!sub && state.user.remind_day !== null;
+  const { remind_day, remind_hour } = state.user;
+  const hours = Array.from({ length: 24 }, (_, h) => h);
+  const hourLabel = (h: number) => new Date(Date.UTC(2026, 0, 1, h)).toLocaleTimeString(undefined, { hour: "numeric", timeZone: "UTC" });
+
+  el.innerHTML = `
+    <h2>Reminders</h2>
+    <p class="sub" style="margin:0 0 12px">A notification on your chosen day if you're behind your target. Nothing is sent when you're on track.</p>
+    ${!supported
+      ? `<p class="sub" style="margin:0">${ios && !isStandalone() ? "On iPhone, install the app first (Share, then Add to Home Screen), then open it from your home screen to turn on reminders." : "This browser can't show notifications."}</p>`
+      : `<div class="row">
+          <div><label for="rday">Day</label><select id="rday">${DAY_NAMES.map((d, i) => `<option value="${i + 1}" ${(remind_day ?? 4) === i + 1 ? "selected" : ""}>${d}</option>`).join("")}</select></div>
+          <div><label for="rhour">Time</label><select id="rhour">${hours.map((h) => `<option value="${h}" ${remind_hour === h ? "selected" : ""}>${hourLabel(h)}</option>`).join("")}</select></div>
+        </div>
+        <button class="${on ? "ghost" : ""} full" id="rtoggle" type="button">${on ? "Turn off reminders" : "Turn on reminders"}</button>
+        ${Notification.permission === "denied" ? `<p class="error">Notifications are blocked for this site. Allow them in your browser settings, then try again.</p>` : ""}`}`;
+  if (!supported) return;
+
+  const day = el.querySelector<HTMLSelectElement>("#rday")!;
+  const hour = el.querySelector<HTMLSelectElement>("#rhour")!;
+  const saveTime = async () => {
+    if (!on) return;
+    await saveSettings({ remind_day: Number(day.value), remind_hour: Number(hour.value) });
+    toast("Reminder time saved");
+  };
+  day.addEventListener("change", saveTime);
+  hour.addEventListener("change", saveTime);
+  el.querySelector("#rtoggle")!.addEventListener("click", async () => {
+    try {
+      if (on) {
+        await api("/push/unsubscribe", { method: "POST", body: JSON.stringify({ endpoint: sub!.endpoint }) });
+        await sub!.unsubscribe();
+        await saveSettings({ remind_day: null });
+        toast("Reminders turned off");
+      } else {
+        if ((await Notification.requestPermission()) !== "granted") {
+          toast("Notifications weren't allowed, so reminders can't be sent.", true);
+          return renderReminders();
+        }
+        const { publicKey } = await api<{ publicKey: string }>("/push/key");
+        const reg = await navigator.serviceWorker.ready;
+        const fresh = (await reg.pushManager.getSubscription()) ??
+          (await reg.pushManager.subscribe({ userVisibleOnly: true, applicationServerKey: b64ToBytes(publicKey) }));
+        await api("/push/subscribe", { method: "POST", body: JSON.stringify(fresh.toJSON()) });
+        await saveSettings({ remind_day: Number(day.value), remind_hour: Number(hour.value) });
+        toast(`Reminders on: ${DAY_NAMES[Number(day.value) - 1]} at ${hourLabel(Number(hour.value))} if you're behind`);
+      }
+    } catch (err) {
+      toast((err as Error).message || "Couldn't change reminders.", true);
+    }
+    renderReminders();
+  });
+}
+
+/* ---------- Calendar sync ---------- */
+
+async function renderCalendarSync(token?: string | null) {
+  const el = app.querySelector<HTMLElement>("#calsync");
+  if (!el) return;
+  if (token === undefined) token = (await api<{ token: string | null }>("/calendar-link")).token;
+  const url = token ? `${location.origin}/api/calendar/${token}.ics` : null;
+  el.innerHTML = `
+    <h2>Calendar sync</h2>
+    <p class="sub" style="margin:0 0 12px">Show your office days and days off in Google, Outlook or Apple Calendar. Keep the link private: anyone with it can see your days.</p>
+    ${url
+      ? `<input readonly value="${esc(url)}" id="calurl" aria-label="Calendar link" />
+         <div class="stack" style="margin-top:8px">
+           <button type="button" id="calcopy">Copy link</button>
+           <a class="btn ghost" href="${esc(url.replace(/^https?:/, "webcal:"))}">Open in my calendar app</a>
+           <button type="button" class="link" id="calreset">Reset link (the old one stops working)</button>
+         </div>
+         <p class="sub" style="margin:8px 0 0">Google Calendar: Other calendars, +, From URL, then paste. Outlook: Add calendar, Subscribe from web.</p>`
+      : `<button type="button" id="calmake" class="full">Get my calendar link</button>`}`;
+  el.querySelector("#calmake")?.addEventListener("click", async () => {
+    renderCalendarSync((await api<{ token: string }>("/calendar-link", { method: "POST" })).token);
+  });
+  el.querySelector("#calreset")?.addEventListener("click", async () => {
+    if (!confirm("Reset the link? Calendars using the old link will stop updating.")) return;
+    renderCalendarSync((await api<{ token: string }>("/calendar-link", { method: "POST" })).token);
+    toast("New link created");
+  });
+  el.querySelector("#calcopy")?.addEventListener("click", async () => {
+    try {
+      await navigator.clipboard.writeText(url!);
+      toast("Link copied");
+    } catch {
+      (el.querySelector("#calurl") as HTMLInputElement).select();
+    }
+  });
+}
+
 /* ---------- Start ---------- */
 
-loadHome().catch(() => {
-  if (!state) renderAuth();
-});
+// The app icon's "Scan desk" shortcut opens /?scan=1.
+const wantsScan = new URLSearchParams(location.search).has("scan");
+if (wantsScan) history.replaceState(null, "", "/");
+
+loadHome()
+  .then(() => {
+    if (wantsScan) openScanner();
+  })
+  .catch(() => {
+    if (!state) renderAuth();
+  });

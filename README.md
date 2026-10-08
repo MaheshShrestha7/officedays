@@ -21,6 +21,11 @@ Only the desk id changes between desks, so the API accepts a scan when the host,
 - Month calendar: tap a day to add a missed office day, or mark leave, a public holiday or a sick day. Days off on a workday lower that week's or month's target.
 - Export all your days as CSV from Settings.
 - Installable app (PWA): an Install button in Settings on Android and desktop Chrome; on iPhone use Share → Add to Home Screen.
+- "Scan desk" shortcut: long-press the installed app icon to open the scanner directly.
+- Desk names: name a desk (e.g. 24.002) the first time you scan it; names are shared by everyone.
+- Stats: weeks or months in a row on target, hit rate, office days per month, your most used desks.
+- Reminders: a push notification on your chosen day and hour when you're behind your target. Sent by `.github/workflows/reminders.yml`, which runs hourly with the same Cloudflare secrets as the deploy. iPhone needs the app installed to the home screen (iOS 16.4+). GitHub pauses scheduled workflows after 60 days without commits; re-enable it from the Actions tab if that happens.
+- Calendar sync: a private iCal link (Settings → Calendar sync) for Google, Outlook or Apple Calendar.
 
 ## Deploy from your phone (GitHub Actions)
 
