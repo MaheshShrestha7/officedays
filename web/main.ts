@@ -50,14 +50,51 @@ function prettyDate(d: string): string {
 const deskName = (eui?: string | null, name?: string | null) =>
   name ? `desk ${name}` : eui ? `desk …${eui.slice(-4)}` : "added by hand";
 
+const svg = (body: string, width = 2) =>
+  `<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="${width}" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">${body}</svg>`;
+const ICON = {
+  scan: svg('<path d="M4 8V6a2 2 0 0 1 2-2h2M16 4h2a2 2 0 0 1 2 2v2M20 16v2a2 2 0 0 1-2 2h-2M8 20H6a2 2 0 0 1-2-2v-2"/><path d="M7 12h10"/>'),
+  home: svg('<path d="M3 11l9-7 9 7v9a1 1 0 0 1-1 1h-5v-6h-6v6H4a1 1 0 0 1-1-1z"/>'),
+  stats: svg('<path d="M5 20V11M12 20V5M19 20v-6"/>'),
+  gear: svg('<circle cx="12" cy="12" r="3"/><path d="M19.4 15a1.7 1.7 0 0 0 .3 1.8l.1.1a2 2 0 1 1-2.8 2.8l-.1-.1a1.7 1.7 0 0 0-1.8-.3 1.7 1.7 0 0 0-1 1.5V21a2 2 0 1 1-4 0v-.1a1.7 1.7 0 0 0-1.1-1.5 1.7 1.7 0 0 0-1.8.3l-.1.1a2 2 0 1 1-2.8-2.8l.1-.1a1.7 1.7 0 0 0 .3-1.8 1.7 1.7 0 0 0-1.5-1H3a2 2 0 1 1 0-4h.1a1.7 1.7 0 0 0 1.5-1.1 1.7 1.7 0 0 0-.3-1.8l-.1-.1a2 2 0 1 1 2.8-2.8l.1.1a1.7 1.7 0 0 0 1.8.3H9a1.7 1.7 0 0 0 1-1.5V3a2 2 0 1 1 4 0v.1a1.7 1.7 0 0 0 1 1.5 1.7 1.7 0 0 0 1.8-.3l.1-.1a2 2 0 1 1 2.8 2.8l-.1.1a1.7 1.7 0 0 0-.3 1.8V9a1.7 1.7 0 0 0 1.5 1H21a2 2 0 1 1 0 4h-.1a1.7 1.7 0 0 0-1.5 1z"/>'),
+  left: svg('<path d="M15 6l-6 6 6 6"/>', 2.4),
+  right: svg('<path d="M9 6l6 6-6 6"/>', 2.4),
+  close: svg('<path d="M6 6l12 12M18 6L6 18"/>', 2.4),
+  office: svg('<path d="M4 21V5a1 1 0 0 1 1-1h9a1 1 0 0 1 1 1v16M15 9h4a1 1 0 0 1 1 1v11M3 21h18M8 8h3M8 12h3M8 16h3"/>'),
+  leave: svg('<path d="M10 14l-6-2 1-2 7 1 4-6a1.5 1.5 0 0 1 2.5 1.5L16 12l2 7-2 1-3-5-3 3v3l-1.5.5L7 18l-3-1.5L4.5 15H8z"/>'),
+  holiday: svg('<path d="M5 21V4M5 4h11l-2 4 2 4H5"/>'),
+  sick: svg('<path d="M14 4v10.5a4 4 0 1 1-4 0V4a2 2 0 1 1 4 0z"/><path d="M12 17v-6"/>'),
+};
+
+type Tab = "home" | "stats" | "settings";
+
+/** The bottom bar on the three main screens. */
+function tabbar(active: Tab): string {
+  const tabs: [Tab, string, string][] = [["home", "Home", ICON.home], ["stats", "Stats", ICON.stats], ["settings", "Settings", ICON.gear]];
+  return `<nav class="tabbar" aria-label="Main"><div>${tabs
+    .map(([t, l, i]) => `<button type="button" data-tab="${t}" ${t === active ? 'aria-current="page"' : ""}>${i}${l}</button>`)
+    .join("")}</div></nav>`;
+}
+
+function wireTabs() {
+  app.querySelectorAll<HTMLButtonElement>("[data-tab]").forEach((b) =>
+    b.addEventListener("click", () => {
+      if (b.getAttribute("aria-current")) return;
+      ({ home: renderHome, stats: renderStats, settings: renderSettings })[b.dataset.tab as Tab]();
+      scrollTo(0, 0);
+    }),
+  );
+}
+
 /* ---------- Sign in ---------- */
 
 function renderAuth(mode: "login" | "signup" = "login") {
   const signup = mode === "signup";
+  app.classList.add("no-tabs");
   app.innerHTML = `
     <div class="brand"><img src="/icon.svg" alt="" /><h1>OfficeDays</h1><p>Scan a desk QR, count your office days.</p></div>
     <div class="card">
-      <div class="tabs" role="group">
+      <div class="seg" role="group">
         <button type="button" data-mode="login" aria-pressed="${!signup}">Sign in</button>
         <button type="button" data-mode="signup" aria-pressed="${signup}">Create account</button>
       </div>
@@ -96,30 +133,28 @@ function renderAuth(mode: "login" | "signup" = "login") {
 /* ---------- Home ---------- */
 
 function ring(p: PeriodProgress, label: string, otherPeriod: string): string {
-  const r = 46, c = 2 * Math.PI * r;
+  const r = 45, c = 2 * Math.PI * r;
   const goal = p.required;
   const frac = goal ? Math.min(p.days / goal, 1) : goal === 0 ? 1 : 0;
-  const met = goal !== null && p.days >= goal;
-  const color = met ? "var(--good)" : "var(--brand)";
   let hint = `No ${label.toLowerCase()} target`;
   if (goal !== null) {
     const left = Math.max(goal - p.days, 0);
-    hint = left === 0 ? "Target met" : `${left} more day${left === 1 ? "" : "s"} to go`;
+    hint = left === 0 ? "Target met" : `${left} more to go`;
     if (p.daysOff) hint += ` · ${p.daysOff} off`;
   } else if (otherPeriod) {
     hint = `Target is per ${otherPeriod}`;
   }
   return `
-    <div class="ring">
-      <div class="label">${label}</div>
-      <svg viewBox="0 0 112 112" role="img" aria-label="${p.days} of ${goal ?? "no"} days">
-        <circle cx="56" cy="56" r="${r}" fill="none" stroke="var(--track)" stroke-width="10" />
-        <circle cx="56" cy="56" r="${r}" fill="none" stroke="${color}" stroke-width="10" stroke-linecap="round"
-          stroke-dasharray="${c}" stroke-dashoffset="${c * (1 - frac)}" transform="rotate(-90 56 56)" />
-        <text x="56" y="60" text-anchor="middle" font-size="26" font-weight="700" fill="var(--ink)">${p.days}</text>
-        <text x="56" y="78" text-anchor="middle" font-size="12" fill="var(--muted)">${goal !== null ? `of ${goal}` : "days"}</text>
-      </svg>
-      <div class="hint">${hint}</div>
+    <div class="card ring-card">
+      <span class="label">${label}</span>
+      <div class="ring" role="img" aria-label="${p.days} of ${goal ?? "no"} days">
+        <svg viewBox="0 0 112 112" aria-hidden="true">
+          <circle cx="56" cy="56" r="${r}" fill="none" stroke="var(--track)" stroke-width="9" />
+          ${frac > 0 ? `<circle cx="56" cy="56" r="${r}" fill="none" stroke="var(--brand)" stroke-width="9" stroke-linecap="round" stroke-dasharray="${c * frac} ${c}" />` : ""}
+        </svg>
+        <div class="core"><span class="num">${p.days}</span><span class="of">${goal !== null ? `of ${goal}` : "days"}</span></div>
+      </div>
+      <span class="hint">${hint}</span>
     </div>`;
 }
 
@@ -131,33 +166,64 @@ async function loadHome() {
 async function renderHome() {
   if (!state) return;
   const { user, progress: p, target } = state;
+  const todayLabel = new Date(`${p.today}T12:00:00Z`).toLocaleDateString(undefined, {
+    weekday: "long", day: "numeric", month: "long", timeZone: "UTC",
+  });
+  app.classList.remove("no-tabs");
   app.innerHTML = `
-    <div class="top">
-      <h1>Hi, ${esc(user.name.split(" ")[0])}</h1>
-      <span><button class="link" id="stats" type="button">Stats</button><button class="link" id="settings" type="button">Settings</button></span>
-    </div>
-    <div class="card">
-      <button class="scan-btn" id="scan" type="button">
-        <svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" aria-hidden="true"><path d="M4 8V5a1 1 0 0 1 1-1h3M16 4h3a1 1 0 0 1 1 1v3M20 16v3a1 1 0 0 1-1 1h-3M8 20H5a1 1 0 0 1-1-1v-3M7 12h10"/></svg>
-        Scan desk QR
-      </button>
-      <p class="today ${p.checkedInToday ? "done" : ""}">${p.checkedInToday ? "You're checked in today" : "Not checked in today"}</p>
-    </div>
-    <div class="card rings">
+    <div class="top"><div><small>${esc(todayLabel)}</small><h1>Hi, ${esc(user.name.split(" ")[0])}</h1></div></div>
+    <section class="card hero">
+      <div class="scan-well">
+        <button class="scan-btn" id="scan" type="button">${ICON.scan}Scan desk</button>
+      </div>
+      <span class="pill ${p.checkedInToday ? "ok" : ""}"><span class="dot"></span>${p.checkedInToday ? "You're checked in today" : "Not checked in today"}</span>
+    </section>
+    <div class="duo">
       ${ring(p.week, "This week", target?.period === "month" ? "month" : "")}
       ${ring(p.month, "This month", target?.period === "week" ? "week" : "")}
     </div>
-    <div class="card" id="calendar"></div>`;
+    <section class="card" id="calendar"></section>
+    ${tabbar("home")}`;
   app.querySelector("#scan")!.addEventListener("click", openScanner);
-  app.querySelector("#settings")!.addEventListener("click", renderSettings);
-  app.querySelector("#stats")!.addEventListener("click", renderStats);
+  wireTabs();
   renderCalendar();
 }
 
 /* ---------- Calendar ---------- */
 
 const KIND_LABEL: Record<string, string> = { leave: "Leave", holiday: "Public holiday", sick: "Sick" };
+const KIND_TAG: Record<string, string> = { leave: "L", holiday: "H", sick: "S" };
 const iso = (d: Date) => d.toISOString().slice(0, 10);
+const addDay = (d: string, n = 1) => iso(new Date(Date.parse(`${d}T00:00:00Z`) + n * 86400000));
+const isoWeekday = (d: string) => ((new Date(`${d}T00:00:00Z`).getUTCDay() + 6) % 7) + 1;
+
+/** A week of a month, cut at the month's edges and scored on that month's days only. */
+interface MonthWeek { start: string; end: string; days: number; required: number | null; met: boolean | null }
+interface MonthDays { checkins: Checkin[]; leave: Leave[]; weeks: MonthWeek[] }
+
+function monthBounds(first: string): { first: string; last: string } {
+  return { first, last: iso(new Date(Date.UTC(+first.slice(0, 4), +first.slice(5, 7), 0))) };
+}
+
+function fetchMonth(first: string): Promise<MonthDays> {
+  const { last } = monthBounds(first);
+  return api<MonthDays>(`/days?from=${first}&to=${last}`);
+}
+
+/** How each day of a month reads: office, a day off, a missed workday, or nothing yet. */
+function dayKinds(data: MonthDays, workdays: string) {
+  const office = new Map(data.checkins.map((c) => [c.local_date, c]));
+  const off = new Map(data.leave.map((l) => [l.date, l.kind]));
+  // A workday with nothing recorded shows as missed only once its week is over below target.
+  const missed = new Set<string>();
+  for (const w of data.weeks) {
+    if (w.met !== false) continue;
+    for (let d = w.start; d <= w.end; d = addDay(d)) {
+      if (workdays.includes(String(isoWeekday(d))) && !office.has(d) && !off.has(d)) missed.add(d);
+    }
+  }
+  return { office, off, missed };
+}
 
 function shiftMonth(first: string, by: number): string {
   const d = new Date(`${first}T00:00:00Z`);
@@ -170,16 +236,15 @@ async function renderCalendar() {
   if (!el || !state) return;
   const today = state.progress.today;
   calMonth ??= `${today.slice(0, 7)}-01`;
-  const first = calMonth;
-  const last = iso(new Date(Date.UTC(+first.slice(0, 4), +first.slice(5, 7), 0)));
+  const { first, last } = monthBounds(calMonth);
   const title = new Date(`${first}T12:00:00Z`).toLocaleDateString(undefined, { month: "long", year: "numeric", timeZone: "UTC" });
   const workdays = state.target?.workdays ?? "12345";
 
   el.innerHTML = `
     <div class="cal-head">
-      <button class="link" type="button" data-nav="-1" aria-label="Previous month">‹</button>
+      <button class="icon-btn" type="button" data-nav="-1" aria-label="Previous month">${ICON.left}</button>
       <h2>${esc(title)}</h2>
-      <button class="link" type="button" data-nav="1" aria-label="Next month">›</button>
+      <button class="icon-btn" type="button" data-nav="1" aria-label="Next month">${ICON.right}</button>
     </div>
     <div class="cal-grid sub">Loading…</div>`;
   el.querySelectorAll<HTMLButtonElement>("[data-nav]").forEach((b) =>
@@ -189,34 +254,39 @@ async function renderCalendar() {
     }),
   );
 
-  const { checkins, leave } = await api<{ checkins: Checkin[]; leave: Leave[] }>(`/days?from=${first}&to=${last}`);
+  const data = await fetchMonth(first);
   if (calMonth !== first) return; // moved on while loading
-  const office = new Map(checkins.map((c) => [c.local_date, c]));
-  const off = new Map(leave.map((l) => [l.date, l.kind]));
+  const { office, off, missed } = dayKinds(data, workdays);
 
   const lead = (new Date(`${first}T00:00:00Z`).getUTCDay() + 6) % 7;
   const cells: string[] = ["M", "T", "W", "T", "F", "S", "S"].map((d) => `<div class="cal-dow">${d}</div>`);
   for (let i = 0; i < lead; i++) cells.push("<div></div>");
   for (let day = 1; day <= +last.slice(8); day++) {
     const date = `${first.slice(0, 8)}${String(day).padStart(2, "0")}`;
-    const wd = ((new Date(`${date}T00:00:00Z`).getUTCDay() + 6) % 7) + 1;
     const c = office.get(date);
     const k = off.get(date);
     const cls = [
       "cal-day",
       c ? (c.status === "manual" ? "is-manual" : "is-office") : "",
-      k ? "is-off" : "",
+      k ? `is-${k}` : "",
+      missed.has(date) ? "is-missed" : "",
       date === today ? "is-today" : "",
       date > today ? "is-future" : "",
-      workdays.includes(String(wd)) ? "" : "is-weekend",
+      workdays.includes(String(isoWeekday(date))) ? "" : "is-weekend",
     ].join(" ");
-    const label = c ? (c.status === "manual" ? "office, added by hand" : "office") : k ? KIND_LABEL[k] : "no entry";
+    const label = c
+      ? (c.status === "manual" ? "office, added by hand" : "office")
+      : k ? KIND_LABEL[k] : missed.has(date) ? "no office, week missed" : "no entry";
     cells.push(`<button type="button" class="${cls}" data-date="${date}" aria-label="${prettyDate(date)}: ${label}">
-      ${day}${k ? `<span class="tag">${k === "holiday" ? "H" : k === "sick" ? "S" : "L"}</span>` : ""}</button>`);
+      ${day}${k ? `<span class="tag">${KIND_TAG[k]}</span>` : ""}</button>`);
   }
   el.querySelector(".cal-grid")!.outerHTML = `<div class="cal-grid">${cells.join("")}</div>
-    <p class="legend"><span class="dot office"></span>Office <span class="dot manual"></span>Added by hand <span class="dot off"></span>Leave, holiday or sick</p>
-    <p class="sub" style="margin:4px 0 0">Tap a day to add a missed office day or mark time off.</p>`;
+    <p class="legend">
+      <span><i class="k-office"></i>Office</span><span><i class="k-manual"></i>Added by hand</span>
+      <span><i class="k-leave"></i>Leave</span><span><i class="k-holiday"></i>Holiday</span><span><i class="k-sick"></i>Sick</span>
+      <span><i class="k-missed"></i>No office, week missed</span>
+    </p>
+    <p class="sub">Tap a day to add a missed office day or mark time off.</p>`;
   el.querySelectorAll<HTMLButtonElement>("[data-date]").forEach((b) =>
     b.addEventListener("click", () => {
       const d = b.dataset.date!;
@@ -231,26 +301,27 @@ function openDaySheet(date: string, checkin: Checkin | null, kind: string | null
   const now = checkin
     ? checkin.status === "manual" ? "Office day, added by hand" : `Office day, scanned at ${deskName(checkin.desk_eui64, checkin.desk_name)}`
     : kind ? KIND_LABEL[kind] : "Nothing recorded";
-  const options: [string, string][] = [
+  const options: [keyof typeof ICON, string][] = [
     ["office", "Office day"],
     ["leave", "Leave"],
     ["holiday", "Public holiday"],
     ["sick", "Sick"],
-    ["none", "Clear"],
   ];
   const dlg = document.createElement("dialog");
   dlg.className = "sheet";
   dlg.innerHTML = `
-    <h2 style="color:var(--ink);font-size:17px">${prettyDate(date)}</h2>
-    <p class="sub" style="margin:0 0 12px">${esc(now)}</p>
-    <div class="sheet-options">
+    <div class="grab"></div>
+    <div class="row"><h3>${prettyDate(date)}</h3>
+      <button type="button" class="icon-btn" data-close aria-label="Close">${ICON.close}</button></div>
+    <p class="sub">${esc(now)}</p>
+    <div class="choices">
       ${options
-        .filter(([t]) => !(t === "office" && future) && !(t === "none" && current === "none"))
-        .map(([t, l]) => `<button type="button" class="ghost${t === current ? " is-current" : ""}" data-type="${t}" ${t === current ? "disabled" : ""}>${t === current ? `✓ ${l}` : l}</button>`)
+        .map(([t, l]) => `<button type="button" class="choice" data-type="${t}" aria-pressed="${t === current}"
+          ${t === "office" && future && current !== "office" ? 'disabled title="Office days can\'t be in the future"' : ""}>${ICON[t]}${l}</button>`)
         .join("")}
     </div>
-    ${checkin?.desk_eui64 ? `<button type="button" class="link full" data-desk>${checkin.desk_name ? "Rename desk" : "Name this desk"}</button>` : ""}
-    <button type="button" class="link full" data-close>Cancel</button>`;
+    ${current !== "none" ? `<button type="button" class="ghost full" data-type="none">Clear this day</button>` : ""}
+    ${checkin?.desk_eui64 ? `<button type="button" class="link full" data-desk>${checkin.desk_name ? "Rename desk" : "Name this desk"}</button>` : ""}`;
   document.body.append(dlg);
   dlg.querySelector("[data-desk]")?.addEventListener("click", () => {
     dlg.close();
@@ -263,6 +334,7 @@ function openDaySheet(date: string, checkin: Checkin | null, kind: string | null
   dlg.querySelector("[data-close]")!.addEventListener("click", () => dlg.close());
   dlg.querySelectorAll<HTMLButtonElement>("[data-type]").forEach((b) =>
     b.addEventListener("click", async () => {
+      if (b.dataset.type === current) return dlg.close();
       try {
         state = await api<Summary>(`/days/${date}`, { method: "PUT", body: JSON.stringify({ type: b.dataset.type }) });
         dlg.close();
@@ -282,9 +354,15 @@ async function openScanner() {
   const overlay = document.createElement("div");
   overlay.className = "scanner";
   overlay.innerHTML = `
-    <video playsinline muted></video>
-    <div class="frame" aria-hidden="true"></div>
-    <div class="bar"><p id="scan-msg">Point the camera at the QR on your desk</p><button type="button">Cancel</button></div>`;
+    <div class="top"><h1>Scan desk QR</h1>
+      <button type="button" class="icon-btn" data-close aria-label="Close scanner">${ICON.close}</button></div>
+    <div class="viewfinder">
+      <video playsinline muted></video>
+      <div class="qr" aria-hidden="true"><span class="corner c1"></span><span class="corner c2"></span><span class="corner c3"></span><span class="corner c4"></span></div>
+      <span class="line" aria-hidden="true"></span>
+    </div>
+    <p id="scan-msg">Point the camera at the QR on your desk</p>
+    <button type="button" class="ghost" data-close>Cancel</button>`;
   document.body.append(overlay);
   const video = overlay.querySelector("video")!;
   const msg = overlay.querySelector("#scan-msg")!;
@@ -296,7 +374,7 @@ async function openScanner() {
     stream?.getTracks().forEach((t) => t.stop());
     overlay.remove();
   };
-  overlay.querySelector("button")!.addEventListener("click", close);
+  overlay.querySelectorAll("[data-close]").forEach((b) => b.addEventListener("click", close));
 
   try {
     stream = await navigator.mediaDevices.getUserMedia({
@@ -386,54 +464,68 @@ function renderSettings() {
   const { user, target } = state;
   const zones: string[] = (Intl as any).supportedValuesOf?.("timeZone") ?? [user.timezone];
   if (!zones.includes(user.timezone)) zones.unshift(user.timezone);
+  const monthly = target?.period === "month";
+  app.classList.remove("no-tabs");
   app.innerHTML = `
-    <div class="top"><h1>Settings</h1><button class="link" id="back" type="button">Done</button></div>
-    <form class="card" id="form">
-      <h2>Office target</h2>
-      <div class="row">
-        <div>
-          <label for="days">Days</label>
-          <input id="days" name="days_required" type="number" inputmode="numeric" min="0" max="31" value="${target?.days_required ?? 3}" />
+    <div class="top"><h1>Settings</h1></div>
+    <form class="stack" id="form" style="gap:18px">
+      <section class="card">
+        <h2>Office target</h2>
+        <div class="split">
+          <div>
+            <label for="days">Days</label>
+            <div class="stepper">
+              <button type="button" class="icon-btn" data-step="-1" aria-label="One day fewer">−</button>
+              <input id="days" name="days_required" type="number" inputmode="numeric" min="0" max="31" value="${target?.days_required ?? 3}" />
+              <button type="button" class="icon-btn" data-step="1" aria-label="One day more">+</button>
+            </div>
+          </div>
+          <div>
+            <label id="per">Per</label>
+            <div class="seg" role="radiogroup" aria-labelledby="per">
+              <label><input type="radio" name="period" value="week" ${monthly ? "" : "checked"} /><span>Week</span></label>
+              <label><input type="radio" name="period" value="month" ${monthly ? "checked" : ""} /><span>Month</span></label>
+            </div>
+          </div>
         </div>
-        <div>
-          <label for="period">Per</label>
-          <select id="period" name="period">
-            <option value="week" ${target?.period !== "month" ? "selected" : ""}>week</option>
-            <option value="month" ${target?.period === "month" ? "selected" : ""}>month</option>
-          </select>
-        </div>
-      </div>
-      <fieldset class="workdays">
-        <legend>Workdays</legend>
-        ${["Mon", "Tue", "Wed", "Thu", "Fri", "Sat", "Sun"]
-          .map((d, i) => `<label><input type="checkbox" name="wd" value="${i + 1}" ${(target?.workdays ?? "12345").includes(String(i + 1)) ? "checked" : ""} /><span>${d}</span></label>`)
-          .join("")}
-      </fieldset>
-      <p class="sub" style="margin:6px 0 0">Leave, holidays and sick days on a workday lower that week's or month's target.</p>
-      <h2 style="margin-top:20px">You</h2>
-      <label for="name">Name</label>
-      <input id="name" name="name" value="${esc(user.name)}" />
-      <label for="tz">Timezone</label>
-      <select id="tz" name="timezone">${zones.map((z) => `<option ${z === user.timezone ? "selected" : ""}>${esc(z)}</option>`).join("")}</select>
-      <p class="error" id="err"></p>
-      <button class="full" type="submit">Save</button>
+        <fieldset class="days">
+          <legend>Workdays</legend>
+          ${["Mon", "Tue", "Wed", "Thu", "Fri", "Sat", "Sun"]
+            .map((d, i) => `<label><input type="checkbox" name="wd" value="${i + 1}" ${(target?.workdays ?? "12345").includes(String(i + 1)) ? "checked" : ""} /><span>${d}</span></label>`)
+            .join("")}
+        </fieldset>
+        <p class="hint">Leave, holidays and sick days on a workday lower that week's or month's target.</p>
+      </section>
+      <section class="card">
+        <h2>You</h2>
+        <div><label for="name">Name</label><input id="name" name="name" value="${esc(user.name)}" /></div>
+        <div><label for="tz">Timezone</label>
+          <select id="tz" name="timezone">${zones.map((z) => `<option ${z === user.timezone ? "selected" : ""}>${esc(z)}</option>`).join("")}</select></div>
+        <p class="error" id="err"></p>
+        <button class="full" type="submit">Save</button>
+      </section>
     </form>
-    <div class="card" id="reminders"></div>
-    <div class="card" id="calsync"></div>
-    <div class="card">
+    <section class="card" id="reminders"></section>
+    <section class="card" id="calsync"></section>
+    <section class="card">
       <h2>App</h2>
-      <div class="stack">
-        <button class="ghost" id="install" type="button" hidden>Install app</button>
-        <p class="sub" id="install-ios" hidden style="margin:0">To install: tap the Share button in Safari, then <b>Add to Home Screen</b>.</p>
-        <a class="btn ghost" href="/api/export.csv" download>Export my days (CSV)</a>
-      </div>
-      <p class="sub" style="margin:16px 0 12px">Signed in as ${esc(user.email)}</p>
-      <button class="ghost" id="logout" type="button">Sign out</button>
-    </div>`;
-  app.querySelector("#back")!.addEventListener("click", renderHome);
+      <button class="list-row" id="install" type="button" hidden><span>Install on this phone<small>Adds OfficeDays to your home screen</small></span><span class="chev">›</span></button>
+      <p class="hint" id="install-ios" hidden>To install: tap the Share button in Safari, then <b>Add to Home Screen</b>.</p>
+      <a class="list-row" href="/api/export.csv" download><span>Export my days<small>A CSV file of every day recorded</small></span><span class="chev">›</span></a>
+      <hr class="groove" />
+      <button class="list-row" id="logout" type="button"><span>Sign out<small>Signed in as ${esc(user.email)}</small></span><span class="chev">›</span></button>
+    </section>
+    ${tabbar("settings")}`;
+  wireTabs();
   setupInstall();
   renderReminders();
   renderCalendarSync();
+  const days = app.querySelector<HTMLInputElement>("#days")!;
+  app.querySelectorAll<HTMLButtonElement>("[data-step]").forEach((b) =>
+    b.addEventListener("click", () => {
+      days.value = String(Math.min(31, Math.max(0, (Number(days.value) || 0) + Number(b.dataset.step))));
+    }),
+  );
   app.querySelector("#logout")!.addEventListener("click", async () => {
     await api("/logout", { method: "POST" });
     state = null;
@@ -499,14 +591,13 @@ function openDeskName(eui64: string, current: string | null) {
   dlg.className = "sheet";
   dlg.innerHTML = `
     <form method="dialog" id="desk-form">
-      <h2 style="color:var(--ink);font-size:17px">${current ? "Rename this desk" : "Name this desk?"}</h2>
-      <p class="sub" style="margin:0 0 4px">Use the number printed on the desk label, like 24.002. Everyone who scans this desk will see it.</p>
-      <label for="desk-name">Desk name</label>
-      <input id="desk-name" name="name" maxlength="40" autocomplete="off" value="${esc(current ?? "")}" placeholder="24.002" />
-      <div class="sheet-options" style="margin-top:16px">
-        <button type="submit">Save</button>
-        <button type="button" class="link" data-close>${current ? "Cancel" : "Skip"}</button>
-      </div>
+      <div class="grab"></div>
+      <h3>${current ? "Rename this desk" : "Name this desk?"}</h3>
+      <p class="sub">Use the number printed on the desk label, like 24.002. Everyone who scans this desk will see it.</p>
+      <div><label for="desk-name">Desk name</label>
+      <input id="desk-name" name="name" maxlength="40" autocomplete="off" value="${esc(current ?? "")}" placeholder="24.002" /></div>
+      <button type="submit" class="full">Save</button>
+      <button type="button" class="link full" data-close>${current ? "Cancel" : "Skip"}</button>
     </form>`;
   document.body.append(dlg);
   dlg.addEventListener("close", () => dlg.remove());
@@ -535,90 +626,180 @@ interface Stats {
   weeks: PeriodResult[];
   months: PeriodResult[];
   streak: number;
+  bestStreak: number;
   streakUnit: "week" | "month";
   hit: { met: number; total: number };
   totalDays: number;
+  /** Office days per weekday, Monday first. */
+  weekdays: number[];
   topDesks: { eui64: string; name: string | null; days: number; last: string }[];
 }
 
-function monthChart(months: PeriodResult[]): string {
-  const W = 340, H = 150, top = 22, bottom = 22, left = 4, right = 4;
-  const max = Math.max(4, ...months.map((m) => m.days), ...months.map((m) => m.required ?? 0));
-  const step = (W - left - right) / months.length;
-  const bw = Math.min(22, step - 4);
-  const y = (v: number) => top + (H - top - bottom) * (1 - v / max);
-  const label = (m: PeriodResult) =>
-    new Date(`${m.start}T12:00:00Z`).toLocaleDateString(undefined, { month: "short", timeZone: "UTC" });
-  const bars = months.map((m, i) => {
-    const x = left + i * step + (step - bw) / 2;
-    const h = Math.max(H - bottom - y(m.days), m.days ? 2 : 0);
-    const last = i === months.length - 1;
-    const r = Math.min(4, h / 2);
-    const path = h
-      ? `M${x},${H - bottom} V${H - bottom - h + r} q0,-${r} ${r},-${r} H${x + bw - r} q${r},0 ${r},${r} V${H - bottom} Z`
-      : "";
-    return `<g class="bar">
-      <rect x="${left + i * step}" y="${top}" width="${step}" height="${H - top}" fill="transparent" />
-      ${path ? `<path d="${path}" fill="var(--brand)" opacity="${last ? 1 : 0.75}" />` : ""}
-      ${m.required !== null ? `<line x1="${x - 2}" x2="${x + bw + 2}" y1="${y(m.required)}" y2="${y(m.required)}" stroke="var(--ink)" stroke-width="1.5" stroke-dasharray="3 2" />` : ""}
-      ${last || m.days === max ? `<text x="${x + bw / 2}" y="${H - bottom - h - 6}" text-anchor="middle" font-size="11" font-weight="600" fill="var(--ink)">${m.days}</text>` : ""}
-      <text x="${x + bw / 2}" y="${H - 6}" text-anchor="middle" font-size="10" fill="var(--muted)">${label(m)}</text>
-      <title>${label(m)}: ${m.days} office day${m.days === 1 ? "" : "s"}${m.required !== null ? ` of ${m.required}` : ""}</title>
-    </g>`;
+const WEEKDAY_SHORT = ["Mon", "Tue", "Wed", "Thu", "Fri", "Sat", "Sun"];
+const plural = (n: number, word: string) => `${n} ${word}${n === 1 ? "" : "s"}`;
+
+function statsHero(s: Stats): string {
+  const rate = s.hit.total ? Math.round((100 * s.hit.met) / s.hit.total) : null;
+  const unit = s.streakUnit;
+  const c = 2 * Math.PI * 58;
+  let tip = "";
+  const p = state?.progress;
+  const period = p && (unit === "week" ? p.week : p.month);
+  if (period && period.required !== null) {
+    const left = period.required - period.days;
+    tip = left <= 0 ? `This ${unit}'s target is met` : `${plural(left, "more office day")} meets this ${unit}'s target`;
+  }
+  return `
+    <section class="card st-hero" style="--i:0">
+      <div class="st-gauge" role="img" aria-label="${rate ?? 0}% of ${unit}s on target">
+        <svg viewBox="0 0 140 140" aria-hidden="true">
+          <defs><linearGradient id="g-gauge" x1="0" y1="0" x2="1" y2="1"><stop offset="0" stop-color="var(--brand-hi)" /><stop offset="1" stop-color="var(--brand)" /></linearGradient></defs>
+          <circle cx="70" cy="70" r="58" fill="none" stroke="var(--track)" stroke-width="12" />
+          ${rate ? `<circle class="st-arc" cx="70" cy="70" r="58" fill="none" stroke="url(#g-gauge)" stroke-width="12" stroke-linecap="round" stroke-dasharray="${(c * rate) / 100} ${c}" />` : ""}
+        </svg>
+        <div class="st-core">${rate === null ? `<b>–</b><span>no finished ${unit}s yet</span>` : `<b data-to="${rate}" data-suffix="%">${rate}%</b><span>${unit}s on target</span>`}</div>
+      </div>
+      <div class="st-facts">
+        <div class="st-fact"><b data-to="${s.totalDays}">${s.totalDays}</b><span>office days in the last year</span></div>
+        <div class="st-fact"><b data-to="${s.bestStreak}">${s.bestStreak}</b><span>${unit}s, your best streak</span></div>
+        ${tip ? `<span class="pill st-tip">${esc(tip)}</span>` : ""}
+      </div>
+    </section>`;
+}
+
+/** This month, one row per week (cut at the month's edges) and one cell per workday. */
+function monthByWeek(data: MonthDays, first: string, today: string, workdays: string): string {
+  const { office, off, missed } = dayKinds(data, workdays);
+  const cols = [...workdays].map(Number).sort();
+  const monthName = new Date(`${first}T12:00:00Z`).toLocaleDateString(undefined, { month: "long", timeZone: "UTC" });
+  const short = new Date(`${first}T12:00:00Z`).toLocaleDateString(undefined, { month: "short", timeZone: "UTC" });
+  const rows = data.weeks.map((w, i) => {
+    const monday = addDay(w.start, 1 - isoWeekday(w.start));
+    const cells = cols.map((wd) => {
+      const d = addDay(monday, wd - 1);
+      if (d < w.start || d > w.end) return `<span class="mw-c blank"></span>`;
+      const c = office.get(d);
+      const k = off.get(d);
+      const cls = c ? (c.status === "manual" ? "manual" : "office") : k ? k : missed.has(d) ? "missed" : d === today ? "today" : d > today ? "future" : "";
+      return `<span class="mw-c ${cls}">${+d.slice(8)}${k ? `<sup>${KIND_TAG[k]}</sup>` : ""}</span>`;
+    });
+    const running = w.start <= today && today <= w.end;
+    const status = w.met === true ? "met" : w.met === false ? "missed" : running ? "now" : "later";
+    const word = w.met === true ? "On target" : w.met === false ? "Missed" : running ? "This week" : w.start > today ? "Coming up" : "Open";
+    const score = w.required !== null ? `${w.days}/${w.required}` : plural(w.days, "day");
+    const label = w.start === w.end ? `${+w.start.slice(8)}` : `${+w.start.slice(8)}–${+w.end.slice(8)}`;
+    return `<div class="mw-row" style="--i:${i}"><span class="mw-l">${label}</span>${cells.join("")}<span class="mw-s ${status}"><b>${score}</b>${word}</span></div>`;
   });
-  return `<svg viewBox="0 0 ${W} ${H}" class="chart" role="img" aria-label="Office days per month">
-    <line x1="0" x2="${W}" y1="${H - bottom}" y2="${H - bottom}" stroke="var(--line)" />
-    ${bars.join("")}
-  </svg>`;
+  return `
+    <section class="card" style="--i:1">
+      <div class="row"><h2>${esc(monthName)} by week</h2>${state?.target?.period === "week" ? `<span class="hint">Target ${state.target.days_required} a week</span>` : ""}</div>
+      <div class="mw" style="--cols:${cols.length}">
+        <span class="mw-l">${esc(short)}</span>${cols.map((wd) => `<span class="mw-h">${WEEKDAY_SHORT[wd - 1][0]}</span>`).join("")}<span></span>
+        ${rows.join("")}
+      </div>
+      <p class="legend"><span><i class="k-office"></i>Office</span><span><i class="k-leave"></i>Leave</span><span><i class="k-holiday"></i>Holiday</span><span><i class="k-sick"></i>Sick</span><span><i class="k-missed"></i>No office, week missed</span></p>
+    </section>`;
+}
+
+function monthBars(months: PeriodResult[], today: string): string {
+  const shown = months.slice(-6);
+  const target = shown.reduce<number | null>((m, x) => (x.required === null ? m : Math.max(m ?? 0, x.required)), null);
+  const max = Math.max(4, target ?? 0, ...shown.map((m) => m.days));
+  const plot = 100;
+  const name = (m: PeriodResult) => new Date(`${m.start}T12:00:00Z`).toLocaleDateString(undefined, { month: "short", timeZone: "UTC" });
+  return `
+    <section class="card" style="--i:2">
+      <div class="row"><h2>Office days per month</h2>${target !== null ? `<span class="legend"><span><i class="k-line"></i>target</span></span>` : ""}</div>
+      <div class="st-months" style="--n:${shown.length}">
+        ${target !== null ? `<div class="st-target" style="bottom:${28 + (plot * target) / max}px"></div>` : ""}
+        ${shown
+          .map((m, i) => `<div class="st-mcol${m.end >= today ? " live" : ""}" style="--i:${i}">
+            <em>${m.days}</em><i style="height:${Math.max((plot * m.days) / max, m.days ? 6 : 0)}px"></i><span>${name(m)}</span></div>`)
+          .join("")}
+      </div>
+    </section>`;
+}
+
+function usualDays(weekdays: number[], workdays: string): string {
+  const cols = [...workdays].map(Number).sort();
+  const counts = cols.map((wd) => weekdays[wd - 1] ?? 0);
+  const max = Math.max(...counts, 1);
+  const top = counts.some((n) => n > 0) ? cols[counts.indexOf(max)] : null;
+  const names = ["Monday", "Tuesday", "Wednesday", "Thursday", "Friday", "Saturday", "Sunday"];
+  return `
+    <section class="card" style="--i:3">
+      <h2>Your usual days</h2>
+      <div class="st-rhythm" style="--n:${cols.length}">
+        ${cols
+          .map((wd, i) => `<div class="st-r${wd === top ? " top" : ""}" style="--i:${i}"><i style="height:${Math.max((84 * counts[i]) / max, 8)}px"></i><b>${counts[i]}</b><span>${WEEKDAY_SHORT[wd - 1]}</span></div>`)
+          .join("")}
+      </div>
+      <p class="hint">${top ? `${names[top - 1]} is your most common office day.` : "Your office days will show here."}</p>
+    </section>`;
+}
+
+function deskCard(desks: Stats["topDesks"]): string {
+  const total = desks.reduce((n, d) => n + d.days, 0);
+  return `
+    <section class="card" style="--i:4">
+      <h2>Your desks</h2>
+      ${desks.length
+        ? desks
+            .map((d, i) => {
+              const pct = Math.round((100 * d.days) / total);
+              return `${i ? '<hr class="groove" />' : ""}<div class="st-desk" style="--i:${i}">
+                <div class="row"><b>${d.name ? `Desk ${esc(d.name)}` : `Unnamed desk …${d.eui64.slice(-4)}`}</b>
+                  <button class="ghost" type="button" data-desk="${d.eui64}" data-name="${esc(d.name ?? "")}">${d.name ? "Rename" : "Name it"}</button></div>
+                <div class="st-share"><i style="width:${pct}%"></i></div>
+                <span>${plural(d.days, "day")} · ${pct}% · last ${prettyDate(d.last)}</span>
+              </div>`;
+            })
+            .join("")
+        : `<p class="hint">Scan a desk to see it here.</p>`}
+    </section>`;
+}
+
+/** Counts the hero numbers up from zero. */
+function countUp(root: HTMLElement) {
+  if (matchMedia("(prefers-reduced-motion: reduce)").matches) return;
+  root.querySelectorAll<HTMLElement>("[data-to]").forEach((el) => {
+    const to = Number(el.dataset.to), suffix = el.dataset.suffix ?? "";
+    let t0: number | null = null;
+    const step = (t: number) => {
+      t0 ??= t;
+      const k = Math.min(1, (t - t0) / 1100);
+      el.textContent = `${Math.round(to * (1 - Math.pow(1 - k, 3)))}${suffix}`;
+      if (k < 1) requestAnimationFrame(step);
+    };
+    requestAnimationFrame(step);
+  });
 }
 
 async function renderStats() {
+  if (!state) return;
+  app.classList.remove("no-tabs");
   app.innerHTML = `
-    <div class="top" id="statsview"><h1>Stats</h1><button class="link" id="back" type="button">Done</button></div>
-    <div class="card sub">Loading…</div>`;
-  app.querySelector("#back")!.addEventListener("click", renderHome);
-  const s = await api<Stats>("/stats");
+    <div class="top" id="statsview"><h1>Stats</h1></div>
+    <section class="card"><p class="sub">Loading…</p></section>
+    ${tabbar("stats")}`;
+  wireTabs();
+  const today = state.progress.today;
+  const first = `${today.slice(0, 7)}-01`;
+  const [s, month] = await Promise.all([api<Stats>("/stats"), fetchMonth(first)]);
   if (!app.querySelector("#statsview")) return;
-  const rate = s.hit.total ? Math.round((100 * s.hit.met) / s.hit.total) : null;
-  const unit = s.streakUnit;
-  const weeks = s.weeks.slice(-12);
-  const anyMonthlyTarget = s.months.some((m) => m.required !== null);
+  const workdays = state.target?.workdays ?? "12345";
   app.innerHTML = `
-    <div class="top" id="statsview"><h1>Stats</h1><button class="link" id="back" type="button">Done</button></div>
-    <div class="tiles">
-      <div class="tile"><div class="big">${s.streak}</div><div class="sub">${unit}${s.streak === 1 ? "" : "s"} in a row on target</div></div>
-      <div class="tile"><div class="big">${rate === null ? "–" : `${rate}%`}</div><div class="sub">${rate === null ? "no finished " + unit + "s yet" : `${s.hit.met} of ${s.hit.total} ${unit}s on target`}</div></div>
-      <div class="tile"><div class="big">${s.totalDays}</div><div class="sub">office days in the last year</div></div>
+    <div class="top" id="statsview"><h1>Stats</h1></div>
+    <div class="stack stats" style="gap:18px">
+      ${statsHero(s)}
+      ${monthByWeek(month, first, today, workdays)}
+      ${monthBars(s.months, today)}
+      ${usualDays(s.weekdays, workdays)}
+      ${deskCard(s.topDesks)}
     </div>
-    <div class="card">
-      <h2>Office days per month</h2>
-      ${monthChart(s.months)}
-      ${anyMonthlyTarget ? `<p class="legend"><span class="dash"></span>Monthly target</p>` : ""}
-    </div>
-    <div class="card">
-      <h2>Recent weeks</h2>
-      <div class="weeks">${weeks
-        .map((w) => {
-          const cls = w.met === true ? "met" : w.met === false ? "missed" : "open";
-          const date = new Date(`${w.start}T12:00:00Z`).toLocaleDateString(undefined, { day: "numeric", month: "short", timeZone: "UTC" });
-          const status = w.met === true ? "on target" : w.met === false ? "missed" : w.required === null ? "no weekly target" : "in progress";
-          return `<div class="wk ${cls}" title="Week of ${date}: ${w.days} day${w.days === 1 ? "" : "s"}, ${status}">
-            <span class="n">${w.days}${w.required !== null ? `<small>/${w.required}</small>` : ""}</span><span class="d">${date}</span></div>`;
-        })
-        .join("")}</div>
-      <p class="legend"><span class="dot office"></span>On target <span class="dot missed"></span>Missed <span class="dot off"></span>In progress</p>
-    </div>
-    <div class="card">
-      <h2>Your desks</h2>
-      <ul class="list">${s.topDesks.length
-        ? s.topDesks
-            .map((d) => `<li><span>${d.name ? `Desk ${esc(d.name)}` : `Unnamed desk …${d.eui64.slice(-4)}`}<br />
-              <span class="sub">${d.days} day${d.days === 1 ? "" : "s"} · last ${prettyDate(d.last)}</span></span>
-              <button class="link" type="button" data-desk="${d.eui64}" data-name="${esc(d.name ?? "")}">${d.name ? "Rename" : "Name it"}</button></li>`)
-            .join("")
-        : `<li class="sub">Scan a desk to see it here.</li>`}</ul>
-    </div>`;
-  app.querySelector("#back")!.addEventListener("click", renderHome);
+    ${tabbar("stats")}`;
+  wireTabs();
+  countUp(app);
   app.querySelectorAll<HTMLButtonElement>("[data-desk]").forEach((b) =>
     b.addEventListener("click", () => openDeskName(b.dataset.desk!, b.dataset.name || null)),
   );
@@ -670,15 +851,15 @@ async function renderReminders() {
   const hourLabel = (h: number) => new Date(Date.UTC(2026, 0, 1, h)).toLocaleTimeString(undefined, { hour: "numeric", timeZone: "UTC" });
 
   el.innerHTML = `
-    <h2>Reminders</h2>
-    <p class="sub" style="margin:0 0 12px">A notification on your chosen day if you're behind your target. Nothing is sent when you're on track.</p>
+    <div class="row"><h2 id="rlabel">Reminders</h2>
+      ${supported ? `<button type="button" class="switch" id="rtoggle" role="switch" aria-checked="${on}" aria-labelledby="rlabel"></button>` : ""}</div>
+    <p class="hint">A nudge on your chosen day if you're behind your target. Nothing is sent when you're on track.</p>
     ${!supported
-      ? `<p class="sub" style="margin:0">${ios && !isStandalone() ? "On iPhone, install the app first (Share, then Add to Home Screen), then open it from your home screen to turn on reminders." : "This browser can't show notifications."}</p>`
-      : `<div class="row">
+      ? `<p class="hint">${ios && !isStandalone() ? "On iPhone, install the app first (Share, then Add to Home Screen), then open it from your home screen to turn on reminders." : "This browser can't show notifications."}</p>`
+      : `<div class="split">
           <div><label for="rday">Day</label><select id="rday">${DAY_NAMES.map((d, i) => `<option value="${i + 1}" ${(remind_day ?? 4) === i + 1 ? "selected" : ""}>${d}</option>`).join("")}</select></div>
           <div><label for="rhour">Time</label><select id="rhour">${hours.map((h) => `<option value="${h}" ${remind_hour === h ? "selected" : ""}>${hourLabel(h)}</option>`).join("")}</select></div>
         </div>
-        <button class="${on ? "ghost" : ""} full" id="rtoggle" type="button">${on ? "Turn off reminders" : "Turn on reminders"}</button>
         ${Notification.permission === "denied" ? `<p class="error">Notifications are blocked for this site. Allow them in your browser settings, then try again.</p>` : ""}`}`;
   if (!supported) return;
 
@@ -727,15 +908,15 @@ async function renderCalendarSync(token?: string | null) {
   const url = token ? `${location.origin}/api/calendar/${token}.ics` : null;
   el.innerHTML = `
     <h2>Calendar sync</h2>
-    <p class="sub" style="margin:0 0 12px">Show your office days and days off in Google, Outlook or Apple Calendar. Keep the link private: anyone with it can see your days.</p>
+    <p class="hint">Show your office days and days off in Google, Outlook or Apple Calendar. Keep the link private: anyone with it can see your days.</p>
     ${url
       ? `<input readonly value="${esc(url)}" id="calurl" aria-label="Calendar link" />
-         <div class="stack" style="margin-top:8px">
+         <div class="split">
            <button type="button" id="calcopy">Copy link</button>
-           <a class="btn ghost" href="${esc(url.replace(/^https?:/, "webcal:"))}">Open in my calendar app</a>
-           <button type="button" class="link" id="calreset">Reset link (the old one stops working)</button>
+           <a class="btn ghost" href="${esc(url.replace(/^https?:/, "webcal:"))}">Open app</a>
          </div>
-         <p class="sub" style="margin:8px 0 0">Google Calendar: Other calendars, +, From URL, then paste. Outlook: Add calendar, Subscribe from web.</p>`
+         <button type="button" class="link" id="calreset">Reset link (the old one stops working)</button>
+         <p class="hint">Google Calendar: Other calendars, +, From URL, then paste. Outlook: Add calendar, Subscribe from web.</p>`
       : `<button type="button" id="calmake" class="full">Get my calendar link</button>`}`;
   el.querySelector("#calmake")?.addEventListener("click", async () => {
     renderCalendarSync((await api<{ token: string }>("/calendar-link", { method: "POST" })).token);

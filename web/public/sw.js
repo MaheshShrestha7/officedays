@@ -1,5 +1,5 @@
 // Keeps the app shell available offline. API calls always go to the network.
-const CACHE = "officedays-v2";
+const CACHE = "officedays-v3";
 
 self.addEventListener("install", (event) => {
   event.waitUntil(caches.open(CACHE).then((c) => c.addAll(["/", "/icon.svg", "/manifest.webmanifest"])));
