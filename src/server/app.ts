@@ -2,7 +2,7 @@ import { Hono } from "hono";
 import { deleteCookie, getCookie, setCookie } from "hono/cookie";
 import { hashPassword, randomHex, sha256Hex, verifyPassword } from "./auth";
 import { addDays, isValidDate, isValidTimezone, localDate, monthRange } from "./dates";
-import { history, type TargetRow } from "./history";
+import { history, monthWeeks, weekdayCounts, type TargetRow } from "./history";
 import { buildCalendar, type CalendarEvent } from "./ical";
 import { checkDeskQr } from "./qr";
 import { progress, type Target } from "./stats";
@@ -278,7 +278,8 @@ app.get("/days", async (c) => {
   const from = c.req.query("from") ?? "";
   const to = c.req.query("to") ?? "";
   if (!isValidDate(from) || !isValidDate(to)) return c.json({ error: "Pick a valid date range." }, 400);
-  const [checkins, leave] = await c.env.DB.batch([
+  const month = monthRange(from);
+  const [checkins, leave, monthCheckins, monthLeave, targets] = await c.env.DB.batch([
     c.env.DB.prepare(
       `SELECT c.local_date, c.desk_eui64, d.name AS desk_name, c.status FROM checkins c
        LEFT JOIN desk_names d ON d.eui64 = c.desk_eui64
@@ -289,8 +290,25 @@ app.get("/days", async (c) => {
       from,
       to,
     ),
+    c.env.DB.prepare("SELECT local_date FROM checkins WHERE user_id = ? AND local_date BETWEEN ? AND ?").bind(
+      user.id,
+      month.start,
+      month.end,
+    ),
+    c.env.DB.prepare("SELECT date FROM leave_days WHERE user_id = ? AND date BETWEEN ? AND ?").bind(user.id, month.start, month.end),
+    c.env.DB.prepare(
+      "SELECT period, days_required, workdays, effective_from FROM targets WHERE user_id = ? ORDER BY effective_from, id",
+    ).bind(user.id),
   ]);
-  return c.json({ checkins: checkins.results, leave: leave.results });
+  // Each week of the month that `from` falls in, scored on that month's days only.
+  const weeks = monthWeeks(
+    from,
+    localDate(user.timezone),
+    monthCheckins.results.map((r: any) => r.local_date),
+    monthLeave.results.map((r: any) => r.date),
+    targets.results as unknown as TargetRow[],
+  );
+  return c.json({ checkins: checkins.results, leave: leave.results, weeks });
 });
 
 const DAY_TYPES = ["office", "leave", "holiday", "sick", "none"] as const;
@@ -392,7 +410,7 @@ app.get("/stats", async (c) => {
     leave.results.map((r: any) => r.date),
     targets.results as unknown as TargetRow[],
   );
-  return c.json({ ...h, topDesks: desks.results });
+  return c.json({ ...h, weekdays: weekdayCounts(checkins.results.map((r: any) => r.local_date)), topDesks: desks.results });
 });
 
 /* ---------- Desk names ---------- */
