@@ -14,6 +14,8 @@ export interface Env {
   QR_PATH: string;
   QR_SITEKEY?: string;
   SIGNUP_CODE?: string;
+  /** Buy Me a Coffee username for the support link; the link is hidden when unset. */
+  BUYMEACOFFEE?: string;
 }
 
 interface User {
@@ -80,7 +82,9 @@ app.post("/signup", async (c) => {
     .bind(email, name, hash, salt, timezone)
     .first<{ id: number }>();
   // Default target: 3 days a week, editable in settings.
-  await c.env.DB.prepare("INSERT INTO targets (user_id, period, days_required, effective_from) VALUES (?, 'week', 3, '0000-01-01')")
+  await c.env.DB.prepare(
+    "INSERT INTO targets (user_id, period, days_required, week_days, effective_from) VALUES (?, 'week', 3, 3, '0000-01-01')",
+  )
     .bind(user!.id)
     .run();
   await startSession(c, user!.id);
@@ -160,11 +164,16 @@ app.use("*", async (c, next) => {
 async function currentTarget(db: D1Database, userId: number, date: string): Promise<Target | null> {
   return db
     .prepare(
-      `SELECT period, days_required, workdays FROM targets WHERE user_id = ? AND effective_from <= ?
+      `SELECT week_days, month_days, workdays FROM targets WHERE user_id = ? AND effective_from <= ?
        ORDER BY effective_from DESC, id DESC LIMIT 1`,
     )
     .bind(userId, date)
     .first<Target>();
+}
+
+function coffeeUrl(username: string | undefined): string | null {
+  const name = username?.trim();
+  return name && /^[A-Za-z0-9_-]{1,64}$/.test(name) ? `https://buymeacoffee.com/${name}` : null;
 }
 
 async function summary(c: any) {
@@ -188,6 +197,7 @@ async function summary(c: any) {
     user: { name: user.name, email: user.email, timezone: user.timezone, remind_day: user.remind_day, remind_hour: user.remind_hour },
     target,
     pushDevices: push?.n ?? 0,
+    coffee: coffeeUrl(c.env.BUYMEACOFFEE),
     progress: progress(today, dates, target, leaveDates),
   };
 }
@@ -237,12 +247,22 @@ app.delete("/checkins/:date", async (c) => {
 app.put("/settings", async (c) => {
   const user = c.get("user");
   const body = await c.req.json().catch(() => ({}));
-  const period = body.period === "month" ? "month" : "week";
-  const days = Number(body.days_required);
-  const max = period === "week" ? 7 : 31;
-  if (!Number.isInteger(days) || days < 0 || days > max) {
-    return c.json({ error: `Days must be a whole number from 0 to ${max}.` }, 400);
+  // Days per week and per month, each a number or null for none. Older clients send one period.
+  let weekDays = body.week_days;
+  let monthDays = body.month_days;
+  if (weekDays === undefined && monthDays === undefined) {
+    weekDays = body.period === "month" ? null : body.days_required;
+    monthDays = body.period === "month" ? body.days_required : null;
   }
+  weekDays = weekDays === null ? null : Number(weekDays);
+  monthDays = monthDays === null ? null : Number(monthDays);
+  if (weekDays !== null && !(Number.isInteger(weekDays) && weekDays >= 0 && weekDays <= 7)) {
+    return c.json({ error: "Days a week must be a whole number from 0 to 7." }, 400);
+  }
+  if (monthDays !== null && !(Number.isInteger(monthDays) && monthDays >= 0 && monthDays <= 31)) {
+    return c.json({ error: "Days a month must be a whole number from 0 to 31." }, 400);
+  }
+  if (weekDays === null && monthDays === null) return c.json({ error: "Set a weekly or a monthly target." }, 400);
   const workdays = [...new Set(String(body.workdays ?? "12345").split(""))].filter((d) => /^[1-7]$/.test(d)).sort().join("");
   if (!workdays) return c.json({ error: "Pick at least one workday." }, 400);
   const timezone = isValidTimezone(String(body.timezone ?? "")) ? String(body.timezone) : user.timezone;
@@ -262,11 +282,13 @@ app.put("/settings", async (c) => {
 
   const today = localDate(timezone);
   const current = await currentTarget(c.env.DB, user.id, today);
-  if (!current || current.period !== period || current.days_required !== days || current.workdays !== workdays) {
+  if (!current || current.week_days !== weekDays || current.month_days !== monthDays || current.workdays !== workdays) {
+    // period and days_required are legacy columns that can't be null; week_days and month_days are what count.
     await c.env.DB.prepare(
-      "INSERT INTO targets (user_id, period, days_required, workdays, effective_from) VALUES (?, ?, ?, ?, ?)",
+      `INSERT INTO targets (user_id, period, days_required, week_days, month_days, workdays, effective_from)
+       VALUES (?, ?, ?, ?, ?, ?, ?)`,
     )
-      .bind(user.id, period, days, workdays, today)
+      .bind(user.id, weekDays !== null ? "week" : "month", weekDays ?? monthDays, weekDays, monthDays, workdays, today)
       .run();
   }
   return c.json(await summary(c));
@@ -297,7 +319,7 @@ app.get("/days", async (c) => {
     ),
     c.env.DB.prepare("SELECT date FROM leave_days WHERE user_id = ? AND date BETWEEN ? AND ?").bind(user.id, month.start, month.end),
     c.env.DB.prepare(
-      "SELECT period, days_required, workdays, effective_from FROM targets WHERE user_id = ? ORDER BY effective_from, id",
+      "SELECT week_days, month_days, workdays, effective_from FROM targets WHERE user_id = ? ORDER BY effective_from, id",
     ).bind(user.id),
   ]);
   // Each week of the month that `from` falls in, scored on that month's days only.
@@ -392,7 +414,7 @@ app.get("/stats", async (c) => {
     c.env.DB.prepare("SELECT local_date FROM checkins WHERE user_id = ? AND local_date >= ?").bind(user.id, from),
     c.env.DB.prepare("SELECT date FROM leave_days WHERE user_id = ? AND date >= ?").bind(user.id, from),
     c.env.DB.prepare(
-      "SELECT period, days_required, workdays, effective_from FROM targets WHERE user_id = ? ORDER BY effective_from, id",
+      "SELECT week_days, month_days, workdays, effective_from FROM targets WHERE user_id = ? ORDER BY effective_from, id",
     ).bind(user.id),
     c.env.DB.prepare(
       `SELECT c.desk_eui64 AS eui64, d.name, COUNT(*) AS days, MAX(c.local_date) AS last

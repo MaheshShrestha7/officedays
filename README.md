@@ -40,6 +40,8 @@ Every push to `main` deploys automatically through `.github/workflows/deploy.yml
    - `QR_SITEKEY`: the `sitekey=` value at the end of your desk QR link (optional; without it any Floorsense site is accepted)
 4. **Run it.** Actions tab → Deploy to Cloudflare → Run workflow. When it finishes, the run summary shows the address, normally `https://officedays.pages.dev`.
 
+**Buy me a coffee link (optional).** Put your Buy Me a Coffee username in `BUYMEACOFFEE` in `wrangler.toml` (it's public, not a secret). Settings then shows a "Buy me a coffee" link; leave it empty to hide it.
+
 ## Deploy from a laptop instead
 
 ```sh

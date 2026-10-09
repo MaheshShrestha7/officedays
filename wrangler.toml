@@ -6,6 +6,8 @@ pages_build_output_dir = "dist"
 # The desk QR "skeleton": only links on this host and path count as an office desk.
 QR_HOST = "virtual.floorsen.se"
 QR_PATH = "/scan-code"
+# Your Buy Me a Coffee username (not a secret). Leave empty to hide the "Buy me a coffee" link.
+BUYMEACOFFEE = ""
 # QR_SITEKEY (your office's site key) and SIGNUP_CODE are set as secrets, see README.
 
 [[d1_databases]]

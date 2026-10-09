@@ -58,7 +58,7 @@ for (const user of due) {
   );
   const leave = await query<{ date: string }>("SELECT date FROM leave_days WHERE user_id = ? AND date >= ?", [user.id, from]);
   const [target] = await query<Target>(
-    `SELECT period, days_required, workdays FROM targets WHERE user_id = ?
+    `SELECT week_days, month_days, workdays FROM targets WHERE user_id = ?
      ORDER BY effective_from DESC, id DESC LIMIT 1`,
     [user.id],
   );

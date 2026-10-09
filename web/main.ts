@@ -2,7 +2,9 @@ interface PeriodProgress { start: string; end: string; days: number; daysOff: nu
 interface Summary {
   user: { name: string; email: string; timezone: string; remind_day: number | null; remind_hour: number };
   pushDevices: number;
-  target: { period: "week" | "month"; days_required: number; workdays: string } | null;
+  target: { week_days: number | null; month_days: number | null; workdays: string } | null;
+  /** Buy Me a Coffee link, or null when none is set up. */
+  coffee: string | null;
   progress: { today: string; checkedInToday: boolean; week: PeriodProgress; month: PeriodProgress };
 }
 interface Checkin { local_date: string; desk_eui64: string | null; desk_name?: string | null; status: string }
@@ -179,8 +181,8 @@ async function renderHome() {
       <span class="pill ${p.checkedInToday ? "ok" : ""}"><span class="dot"></span>${p.checkedInToday ? "You're checked in today" : "Not checked in today"}</span>
     </section>
     <div class="duo">
-      ${ring(p.week, "This week", target?.period === "month" ? "month" : "")}
-      ${ring(p.month, "This month", target?.period === "week" ? "week" : "")}
+      ${ring(p.week, "This week", target?.month_days != null ? "month" : "")}
+      ${ring(p.month, "This month", target?.week_days != null ? "week" : "")}
     </div>
     <section class="card" id="calendar"></section>
     ${tabbar("home")}`;
@@ -459,34 +461,42 @@ async function openScanner() {
 
 /* ---------- Settings ---------- */
 
+function stepper(name: string, label: string, value: number, max: number): string {
+  const kind = name.split("_")[0];
+  return `
+    <div id="t-${kind}">
+      <label for="${name}">${label}</label>
+      <div class="stepper">
+        <button type="button" class="icon-btn" data-step="-1" aria-label="One day fewer">−</button>
+        <input id="${name}" name="${name}" type="number" inputmode="numeric" min="0" max="${max}" value="${value}" />
+        <button type="button" class="icon-btn" data-step="1" aria-label="One day more">+</button>
+      </div>
+    </div>`;
+}
+
 function renderSettings() {
   if (!state) return;
   const { user, target } = state;
   const zones: string[] = (Intl as any).supportedValuesOf?.("timeZone") ?? [user.timezone];
   if (!zones.includes(user.timezone)) zones.unshift(user.timezone);
-  const monthly = target?.period === "month";
+  const per = target?.week_days != null && target?.month_days != null ? "both" : target?.month_days != null ? "month" : "week";
   app.classList.remove("no-tabs");
   app.innerHTML = `
     <div class="top"><h1>Settings</h1></div>
     <form class="stack" id="form" style="gap:18px">
       <section class="card">
         <h2>Office target</h2>
-        <div class="split">
-          <div>
-            <label for="days">Days</label>
-            <div class="stepper">
-              <button type="button" class="icon-btn" data-step="-1" aria-label="One day fewer">−</button>
-              <input id="days" name="days_required" type="number" inputmode="numeric" min="0" max="31" value="${target?.days_required ?? 3}" />
-              <button type="button" class="icon-btn" data-step="1" aria-label="One day more">+</button>
-            </div>
+        <div>
+          <label id="per">Per</label>
+          <div class="seg seg-3" role="radiogroup" aria-labelledby="per">
+            <label><input type="radio" name="per" value="week" ${per === "week" ? "checked" : ""} /><span>Week</span></label>
+            <label><input type="radio" name="per" value="month" ${per === "month" ? "checked" : ""} /><span>Month</span></label>
+            <label><input type="radio" name="per" value="both" ${per === "both" ? "checked" : ""} /><span>Both</span></label>
           </div>
-          <div>
-            <label id="per">Per</label>
-            <div class="seg" role="radiogroup" aria-labelledby="per">
-              <label><input type="radio" name="period" value="week" ${monthly ? "" : "checked"} /><span>Week</span></label>
-              <label><input type="radio" name="period" value="month" ${monthly ? "checked" : ""} /><span>Month</span></label>
-            </div>
-          </div>
+        </div>
+        <div class="split" id="targets">
+          ${stepper("week_days", "Days a week", target?.week_days ?? 3, 7)}
+          ${stepper("month_days", "Days a month", target?.month_days ?? 12, 31)}
         </div>
         <fieldset class="days">
           <legend>Workdays</legend>
@@ -513,6 +523,8 @@ function renderSettings() {
       <p class="hint" id="install-ios" hidden>To install: tap the Share button in Safari, then <b>Add to Home Screen</b>.</p>
       <a class="list-row" href="/api/export.csv" download><span>Export my days<small>A CSV file of every day recorded</small></span><span class="chev">›</span></a>
       <hr class="groove" />
+      ${state.coffee ? `<a class="list-row" href="${esc(state.coffee)}" target="_blank" rel="noopener"><span>Buy me a coffee ☕<small>Enjoying OfficeDays? Say thanks with a coffee</small></span><span class="chev">›</span></a>
+      <hr class="groove" />` : ""}
       <button class="list-row" id="logout" type="button"><span>Sign out<small>Signed in as ${esc(user.email)}</small></span><span class="chev">›</span></button>
     </section>
     ${tabbar("settings")}`;
@@ -520,12 +532,22 @@ function renderSettings() {
   setupInstall();
   renderReminders();
   renderCalendarSync();
-  const days = app.querySelector<HTMLInputElement>("#days")!;
   app.querySelectorAll<HTMLButtonElement>("[data-step]").forEach((b) =>
     b.addEventListener("click", () => {
-      days.value = String(Math.min(31, Math.max(0, (Number(days.value) || 0) + Number(b.dataset.step))));
+      const input = b.parentElement!.querySelector("input")!;
+      input.value = String(Math.min(Number(input.max), Math.max(0, (Number(input.value) || 0) + Number(b.dataset.step))));
     }),
   );
+  // Only the steppers for the chosen period(s) are shown.
+  const showTargets = () => {
+    const chosen = (app.querySelector<HTMLInputElement>('input[name="per"]:checked')?.value ?? "week");
+    for (const kind of ["week", "month"]) {
+      app.querySelector<HTMLElement>(`#t-${kind}`)!.hidden = chosen !== kind && chosen !== "both";
+    }
+    app.querySelector<HTMLElement>("#targets")!.classList.toggle("one", chosen !== "both");
+  };
+  app.querySelectorAll('input[name="per"]').forEach((r) => r.addEventListener("change", showTargets));
+  showTargets();
   app.querySelector("#logout")!.addEventListener("click", async () => {
     await api("/logout", { method: "POST" });
     state = null;
@@ -535,12 +557,17 @@ function renderSettings() {
   form.addEventListener("submit", async (e) => {
     e.preventDefault();
     const data = new FormData(form);
-    const body = Object.fromEntries(data) as Record<string, string>;
-    body.workdays = data.getAll("wd").join("");
+    const per = String(data.get("per") ?? "week");
     try {
       state = await api<Summary>("/settings", {
         method: "PUT",
-        body: JSON.stringify({ ...body, days_required: Number(body.days_required) }),
+        body: JSON.stringify({
+          name: data.get("name"),
+          timezone: data.get("timezone"),
+          workdays: data.getAll("wd").join(""),
+          week_days: per === "month" ? null : Number(data.get("week_days")),
+          month_days: per === "week" ? null : Number(data.get("month_days")),
+        }),
       });
       toast("Saved");
       renderHome();
@@ -692,7 +719,7 @@ function monthByWeek(data: MonthDays, first: string, today: string, workdays: st
   });
   return `
     <section class="card" style="--i:1">
-      <div class="row"><h2>${esc(monthName)} by week</h2>${state?.target?.period === "week" ? `<span class="hint">Target ${state.target.days_required} a week</span>` : ""}</div>
+      <div class="row"><h2>${esc(monthName)} by week</h2>${state?.target?.week_days != null ? `<span class="hint">Target ${state.target.week_days} a week</span>` : ""}</div>
       <div class="mw" style="--cols:${cols.length}">
         <span class="mw-l">${esc(short)}</span>${cols.map((wd) => `<span class="mw-h">${WEEKDAY_SHORT[wd - 1][0]}</span>`).join("")}<span></span>
         ${rows.join("")}
@@ -831,8 +858,8 @@ async function saveSettings(extra: Record<string, unknown>) {
     body: JSON.stringify({
       name: user.name,
       timezone: user.timezone,
-      period: target?.period ?? "week",
-      days_required: target?.days_required ?? 3,
+      week_days: target ? target.week_days : 3,
+      month_days: target ? target.month_days : null,
       workdays: target?.workdays ?? "12345",
       ...extra,
     }),
