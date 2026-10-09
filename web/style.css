@@ -118,6 +118,8 @@ select {
 /* Chosen vs not chosen: solid green fill with white text, against a light outlined tile */
 .seg { display: grid; grid-template-columns: 1fr 1fr; border-radius: 14px; box-shadow: var(--press-sm); padding: 4px; gap: 4px; }
 .seg label { margin: 0; }
+.seg-3 { grid-template-columns: repeat(3, 1fr); }
+.split.one { grid-template-columns: 1fr; }
 .seg input, .days input { position: absolute; opacity: 0; width: 1px; height: 1px; pointer-events: none; }
 .seg span, .seg button {
   display: block; text-align: center; padding: 8px; border-radius: 10px; font-size: 13px; font-weight: 700; color: var(--muted);

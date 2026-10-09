@@ -1,5 +1,5 @@
 import { addDays, isoWeekday, monthRange, weekRange } from "./dates";
-import type { Target } from "./stats";
+import { daysFor, type Period, type Target } from "./stats";
 
 export interface TargetRow extends Target {
   effective_from: string;
@@ -17,9 +17,9 @@ export interface PeriodResult {
 export interface History {
   weeks: PeriodResult[];
   months: PeriodResult[];
-  /** Periods in a row (of the target's kind) where the target was met. */
+  /** Periods in a row (weeks, or months when only a monthly target is set) where the target was met. */
   streak: number;
-  /** Longest run of met periods (of the target's kind) in the range. */
+  /** Longest run of met periods (of the streak's unit) in the range. */
   bestStreak: number;
   streakUnit: "week" | "month";
   /** Finished periods with a target: how many were met. */
@@ -36,7 +36,7 @@ export function targetAt(targets: TargetRow[], date: string): Target | null {
 
 function evaluate(
   range: { start: string; end: string },
-  kind: Target["period"],
+  kind: Period,
   today: string,
   checkins: string[],
   leave: string[],
@@ -46,9 +46,10 @@ function evaluate(
   const inRange = (d: string) => d >= range.start && d <= range.end;
   const days = checkins.filter(inRange).length;
   let required: number | null = null;
-  if (target?.period === kind) {
+  const goal = daysFor(target, kind);
+  if (target && goal !== null) {
     const off = leave.filter((d) => inRange(d) && target.workdays.includes(String(isoWeekday(d)))).length;
-    required = Math.max(target.days_required - off, 0);
+    required = Math.max(goal - off, 0);
   }
   const finished = range.end < today;
   const met = required === null ? null : days >= required ? true : finished ? false : null;
@@ -77,7 +78,9 @@ export function history(
     start = monthRange(addDays(start, -1)).start;
   }
 
-  const unit = targetAt(targets, today)?.period ?? "week";
+  // Weeks give the streak unless only a monthly target is set.
+  const current = targetAt(targets, today);
+  const unit: Period = current && current.week_days === null && current.month_days !== null ? "month" : "week";
   const periods = unit === "week" ? weeks : months;
   let streak = 0;
   for (const [i, p] of periods.entries()) {
@@ -114,7 +117,7 @@ export interface MonthWeek {
 /**
  * Splits a month into its weeks, cut at the month's edges, and scores each part on its own days.
  * A part's target is the weekly target or its number of workdays, whichever is lower, less days off.
- * Only weekly targets give a part a target; a part is missed once it has ended below target.
+ * Only a weekly target gives a part a target; a part is missed once it has ended below target.
  */
 export function monthWeeks(
   date: string,
@@ -132,11 +135,11 @@ export function monthWeeks(
     const target = targetAt(targets, start) ?? targetAt(targets, today);
     const days = checkins.filter(inRange).length;
     let required: number | null = null;
-    if (target?.period === "week") {
+    if (target && target.week_days !== null) {
       let workdays = 0;
       for (let d = start; d <= end; d = addDays(d, 1)) if (target.workdays.includes(String(isoWeekday(d)))) workdays++;
       const off = leave.filter((d) => inRange(d) && target.workdays.includes(String(isoWeekday(d)))).length;
-      required = Math.max(Math.min(target.days_required, workdays) - off, 0);
+      required = Math.max(Math.min(target.week_days, workdays) - off, 0);
     }
     const met = required === null ? null : days >= required ? true : end < today ? false : null;
     out.push({ start, end, days, required, met });

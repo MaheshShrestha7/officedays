@@ -1,13 +1,13 @@
 import { describe, expect, it } from "vitest";
 import { history, monthWeeks, targetAt, weekdayCounts, type TargetRow } from "../src/server/history";
 
-const weekly: TargetRow[] = [{ period: "week", days_required: 2, workdays: "12345", effective_from: "0000-01-01" }];
+const weekly: TargetRow[] = [{ week_days: 2, month_days: null, workdays: "12345", effective_from: "0000-01-01" }];
 
 describe("targetAt", () => {
   it("picks the latest target on or before the date", () => {
-    const rows: TargetRow[] = [...weekly, { period: "month", days_required: 8, workdays: "12345", effective_from: "2026-10-01" }];
-    expect(targetAt(rows, "2026-09-30")?.period).toBe("week");
-    expect(targetAt(rows, "2026-10-01")?.period).toBe("month");
+    const rows: TargetRow[] = [...weekly, { week_days: null, month_days: 8, workdays: "12345", effective_from: "2026-10-01" }];
+    expect(targetAt(rows, "2026-09-30")?.week_days).toBe(2);
+    expect(targetAt(rows, "2026-10-01")?.month_days).toBe(8);
   });
 });
 
@@ -49,15 +49,26 @@ describe("history", () => {
   });
 
   it("uses months for the streak when the target is monthly", () => {
-    const monthly: TargetRow[] = [{ period: "month", days_required: 1, workdays: "12345", effective_from: "0000-01-01" }];
+    const monthly: TargetRow[] = [{ week_days: null, month_days: 1, workdays: "12345", effective_from: "0000-01-01" }];
     const h = history(today, "2026-08-01", ["2026-08-10", "2026-09-10"], [], monthly);
     expect(h.streakUnit).toBe("month");
     expect(h.streak).toBe(2);
   });
 });
 
+describe("history with both targets", () => {
+  it("scores weeks and months and keeps the streak in weeks", () => {
+    const both: TargetRow[] = [{ week_days: 1, month_days: 3, workdays: "12345", effective_from: "0000-01-01" }];
+    const h = history("2026-10-08", "2026-09-01", ["2026-09-21", "2026-09-29", "2026-10-06"], [], both);
+    expect(h.streakUnit).toBe("week");
+    expect(h.weeks.at(-1)).toMatchObject({ required: 1, met: true });
+    expect(h.months.at(-2)).toMatchObject({ start: "2026-09-01", days: 2, required: 3, met: false });
+    expect(monthWeeks("2026-10-08", "2026-10-08", [], [], both)[0].required).toBe(1);
+  });
+});
+
 describe("monthWeeks", () => {
-  const three: TargetRow[] = [{ period: "week", days_required: 3, workdays: "12345", effective_from: "0000-01-01" }];
+  const three: TargetRow[] = [{ week_days: 3, month_days: null, workdays: "12345", effective_from: "0000-01-01" }];
 
   it("cuts weeks at the month's edges and scores each part on its own days", () => {
     // October 2026 starts on a Thursday: parts are 1-4, 5-11, 12-18, 19-25, 26-31.
@@ -84,14 +95,14 @@ describe("monthWeeks", () => {
   });
 
   it("gives parts no target when the target is monthly", () => {
-    const monthly: TargetRow[] = [{ period: "month", days_required: 8, workdays: "12345", effective_from: "0000-01-01" }];
+    const monthly: TargetRow[] = [{ week_days: null, month_days: 8, workdays: "12345", effective_from: "0000-01-01" }];
     expect(monthWeeks("2026-10-08", "2026-10-08", [], [], monthly).every((p) => p.required === null)).toBe(true);
   });
 });
 
 describe("bestStreak and weekdayCounts", () => {
   it("finds the longest run of met weeks", () => {
-    const two: TargetRow[] = [{ period: "week", days_required: 1, workdays: "12345", effective_from: "0000-01-01" }];
+    const two: TargetRow[] = [{ week_days: 1, month_days: null, workdays: "12345", effective_from: "0000-01-01" }];
     // Weeks of 7, 14, 21 Sep met; 28 Sep missed; 5 Oct running.
     const h = history("2026-10-08", "2026-09-07", ["2026-09-07", "2026-09-14", "2026-09-21"], [], two);
     expect(h.bestStreak).toBe(3);

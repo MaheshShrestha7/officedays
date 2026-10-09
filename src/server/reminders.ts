@@ -1,5 +1,5 @@
 import { addDays, isoWeekday, localDate, monthRange, weekRange } from "./dates";
-import { progress, type Target } from "./stats";
+import { progress, type PeriodProgress, type Target } from "./stats";
 
 export interface ReminderUser {
   id: number;
@@ -47,12 +47,13 @@ export function planReminder(
 ): ReminderPlan {
   const today = localDate(user.timezone, now);
   const p = progress(today, checkins, target, leave);
-  const period = target?.period === "month" ? p.month : p.week;
-  const left = period.required === null ? 0 : period.required - period.days;
-  const when = target?.period === "month" ? "this month" : "this week";
-  return {
-    userId: user.id,
-    weekStart: weekRange(today).start,
-    message: left > 0 ? `${left} more office day${left === 1 ? "" : "s"} needed ${when}.` : null,
-  };
+  const left = (r: PeriodProgress) => (r.required === null ? 0 : Math.max(r.required - r.days, 0));
+  const week = left(p.week);
+  const month = left(p.month);
+  const days = (n: number) => `${n} more office day${n === 1 ? "" : "s"}`;
+  let message: string | null = null;
+  if (week && month) message = `${days(week)} needed this week, ${month} this month.`;
+  else if (week) message = `${days(week)} needed this week.`;
+  else if (month) message = `${days(month)} needed this month.`;
+  return { userId: user.id, weekStart: weekRange(today).start, message };
 }
