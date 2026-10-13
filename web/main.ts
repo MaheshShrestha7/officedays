@@ -1,3 +1,5 @@
+import { captureLabel, readDeskNumber, type LabelShot, type Point } from "./desk-label";
+
 interface PeriodProgress { start: string; end: string; days: number; daysOff: number; required: number | null }
 interface Summary {
   user: { name: string; email: string; timezone: string; remind_day: number | null; remind_hour: number };
@@ -398,28 +400,39 @@ async function openScanner() {
   const canvas = document.createElement("canvas");
   const ctx = canvas.getContext("2d", { willReadFrequently: true })!;
   let busy = false;
+  let shot: LabelShot | null = null;
 
   const tick = async () => {
     if (done) return;
     if (!busy && video.readyState >= 2) {
       busy = true;
       let text: string | null = null;
+      let corners: Point[] = [];
       try {
         if (native) {
           const codes = await native.detect(video);
           text = codes[0]?.rawValue ?? null;
+          corners = codes[0]?.cornerPoints ?? [];
         } else {
           const scale = Math.min(1, 800 / video.videoWidth);
           canvas.width = video.videoWidth * scale;
           canvas.height = video.videoHeight * scale;
           ctx.drawImage(video, 0, 0, canvas.width, canvas.height);
           const img = ctx.getImageData(0, 0, canvas.width, canvas.height);
-          text = jsQR!(img.data, img.width, img.height, { inversionAttempts: "dontInvert" })?.data ?? null;
+          const code = jsQR!(img.data, img.width, img.height, { inversionAttempts: "dontInvert" });
+          text = code?.data ?? null;
+          if (code) {
+            const l = code.location;
+            corners = [l.topLeftCorner, l.topRightCorner, l.bottomRightCorner, l.bottomLeftCorner]
+              .map((p) => ({ x: p.x / scale, y: p.y / scale }));
+          }
         }
       } catch {
         text = null;
       }
       if (text) {
+        // Keep a still of the label so an unnamed desk can be prefilled with the number printed on it.
+        shot = captureLabel(video, corners);
         await submit(text);
         return;
       }
@@ -443,7 +456,7 @@ async function openScanner() {
         ? "Already checked in today"
         : `Checked in at ${deskName(res.desk, res.deskName)}. ${w.days}${w.required !== null ? ` of ${w.required}` : ""} this week.`);
       renderHome();
-      if (!res.deskName) openDeskName(res.desk, null);
+      if (!res.deskName) openDeskName(res.desk, null, shot ? readDeskNumber(shot) : undefined);
     } catch (err) {
       msg.textContent = (err as Error).message;
       // Let them try another code after a short pause.
@@ -613,7 +626,7 @@ if ("serviceWorker" in navigator) {
 
 /* ---------- Desk names ---------- */
 
-function openDeskName(eui64: string, current: string | null) {
+function openDeskName(eui64: string, current: string | null, suggestion?: Promise<string | null>) {
   const dlg = document.createElement("dialog");
   dlg.className = "sheet";
   dlg.innerHTML = `
@@ -643,7 +656,20 @@ function openDeskName(eui64: string, current: string | null) {
     }
   });
   dlg.showModal();
-  (dlg.querySelector("#desk-name") as HTMLInputElement).focus();
+  const input = dlg.querySelector("#desk-name") as HTMLInputElement;
+  input.focus();
+  if (suggestion) {
+    const sub = dlg.querySelector(".sub")!;
+    input.placeholder = "Reading the label…";
+    suggestion.then((number) => {
+      input.placeholder = "24.002";
+      // Never overwrite something they've already typed.
+      if (!number || !dlg.open || input.value) return;
+      input.value = number;
+      input.select();
+      sub.textContent = "Read from the desk label. Check it's right, or edit it. Everyone who scans this desk will see it.";
+    });
+  }
 }
 
 /* ---------- Stats ---------- */
